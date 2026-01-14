@@ -158,6 +158,40 @@ const findNearestStop = (stops: Stop[], lat: number, lon: number) => {
   return { stop: nearest, distanceKm: nearestDistance }
 }
 
+const buildEligibleStopIds = (
+  destination: Stop,
+  trips: Trip[],
+  stopTimesByTrip: Map<string, StopTime[]>
+) => {
+  const directReachable = new Set<string>()
+  trips.forEach((trip) => {
+    const stopTimes = stopTimesByTrip.get(trip.trip_id)
+    if (!stopTimes) return
+    const destIndex = stopTimes.findIndex((time) => time.stop_id === destination.stop_id)
+    if (destIndex <= 0) return
+    for (let i = 0; i < destIndex; i += 1) {
+      directReachable.add(stopTimes[i].stop_id)
+    }
+  })
+
+  const transferReachable = new Set<string>()
+  if (directReachable.size > 0) {
+    trips.forEach((trip) => {
+      const stopTimes = stopTimesByTrip.get(trip.trip_id)
+      if (!stopTimes) return
+      for (let i = 0; i < stopTimes.length; i += 1) {
+        const stopId = stopTimes[i].stop_id
+        if (!directReachable.has(stopId)) continue
+        for (let j = 0; j < i; j += 1) {
+          transferReachable.add(stopTimes[j].stop_id)
+        }
+      }
+    })
+  }
+
+  return new Set([...directReachable, ...transferReachable])
+}
+
 const theme = createTheme({
   typography: {
     fontFamily: '"Space Grotesk", "Segoe UI", sans-serif',
@@ -252,6 +286,13 @@ function App() {
     return [...stops].sort((a, b) => a.stop_name.localeCompare(b.stop_name))
   }, [stops])
 
+  const eligibleStopsForDestination = useMemo(() => {
+    if (!destination) return stops
+    const eligibleStopIds = buildEligibleStopIds(destination, trips, stopTimesByTrip)
+    if (eligibleStopIds.size === 0) return []
+    return stops.filter((stop) => eligibleStopIds.has(stop.stop_id))
+  }, [destination, stops, stopTimesByTrip, trips])
+
   const lookupAddressSuggestions = async (query: string) => {
     if (!query.trim()) {
       setAddressOptions([])
@@ -331,7 +372,15 @@ function App() {
         return
       }
       const location = { lat: Number(top.lat), lng: Number(top.lon) }
-      const nearest = findNearestStop(stops, location.lat, location.lng)
+      const candidateStops = destination ? eligibleStopsForDestination : stops
+      if (candidateStops.length === 0) {
+        setAddressResult({ address: top.display_name, location })
+        setAddressClosestStop(null)
+        setOrigin(null)
+        setClosestStop(null)
+        return
+      }
+      const nearest = findNearestStop(candidateStops, location.lat, location.lng)
       setAddressResult({ address: top.display_name, location })
       setAddressClosestStop(nearest)
       setOrigin(nearest.stop)
@@ -490,12 +539,17 @@ function App() {
       setGeoError('Stops data is not available yet. Please try again.')
       return
     }
+    const candidateStops = destination ? eligibleStopsForDestination : stops
+    if (candidateStops.length === 0) {
+      setGeoError('No stops found that serve that destination.')
+      return
+    }
     setGeolocating(true)
     setGeoError(null)
     navigator.geolocation.getCurrentPosition(
       (position) => {
         const { latitude, longitude } = position.coords
-        const nearest = findNearestStop(stops, latitude, longitude)
+        const nearest = findNearestStop(candidateStops, latitude, longitude)
         setOrigin(nearest.stop)
         setClosestStop(nearest)
         setGeolocating(false)
