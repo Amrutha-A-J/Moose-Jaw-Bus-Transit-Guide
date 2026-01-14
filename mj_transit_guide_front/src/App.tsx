@@ -1,5 +1,5 @@
-import './App.css'
-import { useEffect, useMemo, useRef, useState } from 'react'
+﻿import './App.css'
+import { useMemo, useRef, useState } from 'react'
 import {
   AppBar,
   Box,
@@ -82,6 +82,14 @@ type CandidateTrip = {
   alightSequence: number
 }
 
+type TransferPlan = {
+  firstLeg: CandidateTrip
+  secondLeg: CandidateTrip
+  transferStop: Stop
+  layoverMinutes: number
+  totalMinutes: number
+}
+
 type AddressSuggestion = {
   description: string
   place_id: string
@@ -92,31 +100,15 @@ type AddressResult = {
   location: { lat: number; lng: number }
 }
 
-declare global {
-  interface Window {
-    google?: any
-  }
+type NominatimResult = {
+  place_id: number
+  display_name: string
+  lat: string
+  lon: string
 }
 
-const googleMapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY
-let googleMapsScriptPromise: Promise<void> | null = null
-
-const loadGoogleMaps = (apiKey: string) => {
-  if (window.google?.maps?.places) return Promise.resolve()
-  if (googleMapsScriptPromise) return googleMapsScriptPromise
-
-  googleMapsScriptPromise = new Promise((resolve, reject) => {
-    const script = document.createElement('script')
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places&v=weekly`
-    script.async = true
-    script.defer = true
-    script.onload = () => resolve()
-    script.onerror = () => reject(new Error('Failed to load Google Maps.'))
-    document.head.appendChild(script)
-  })
-
-  return googleMapsScriptPromise
-}
+const nominatimBaseUrl = 'https://nominatim.openstreetmap.org/search'
+const nominatimLookupUrl = 'https://nominatim.openstreetmap.org/lookup'
 
 const parseCsv = (raw: string) => {
   const [headerLine, ...lines] = raw.trim().split(/\r?\n/)
@@ -138,6 +130,7 @@ const timeToMinutes = (value: string) => {
 }
 
 const formatTime = (value: string) => value.slice(0, 5)
+const minutesBetween = (start: string, end: string) => timeToMinutes(end) - timeToMinutes(start)
 
 const haversineDistanceKm = (a: Stop, lat: number, lon: number) => {
   const toRad = (deg: number) => (deg * Math.PI) / 180
@@ -190,8 +183,6 @@ function App() {
   const [closestStop, setClosestStop] = useState<{ stop: Stop; distanceKm: number } | null>(
     null
   )
-  const [mapsReady, setMapsReady] = useState(false)
-  const [mapsError, setMapsError] = useState<string | null>(null)
   const [addressInput, setAddressInput] = useState('')
   const [addressSelection, setAddressSelection] = useState<AddressSuggestion | null>(null)
   const [addressOptions, setAddressOptions] = useState<AddressSuggestion[]>([])
@@ -202,6 +193,7 @@ function App() {
     distanceKm: number
   } | null>(null)
   const addressTimeout = useRef<number | null>(null)
+  const addressAbort = useRef<AbortController | null>(null)
 
   const stops = useMemo<Stop[]>(() => {
     return parseCsv(stopsRaw).map((row) => ({
@@ -260,65 +252,53 @@ function App() {
     return [...stops].sort((a, b) => a.stop_name.localeCompare(b.stop_name))
   }, [stops])
 
-  useEffect(() => {
-    if (!googleMapsApiKey) {
-      setMapsError('Add a Google Maps API key to enable address search.')
-    }
-  }, [googleMapsApiKey])
-
-  const ensureMapsReady = async () => {
-    if (!googleMapsApiKey) {
-      setMapsError('Add a Google Maps API key to enable address search.')
-      return false
-    }
-    try {
-      await loadGoogleMaps(googleMapsApiKey)
-      setMapsReady(true)
-      setMapsError(null)
-      return true
-    } catch {
-      setMapsError('Unable to load Google Maps right now.')
-      return false
-    }
-  }
-
   const lookupAddressSuggestions = async (query: string) => {
     if (!query.trim()) {
       setAddressOptions([])
       setAddressLoading(false)
       return
     }
-    const ready = await ensureMapsReady()
-    if (!ready || !window.google?.maps?.places) {
+    if (stops.length === 0) {
+      setAddressOptions([])
       setAddressLoading(false)
       return
     }
 
-    const service = new window.google.maps.places.AutocompleteService()
-    service.getPlacePredictions(
-      {
-        input: query,
-        componentRestrictions: { country: 'ca' },
-        types: ['address'],
-      },
-      (predictions: any[], status: string) => {
-        setAddressLoading(false)
-        if (status !== window.google.maps.places.PlacesServiceStatus.OK || !predictions) {
-          setAddressOptions([])
-          if (status !== window.google.maps.places.PlacesServiceStatus.ZERO_RESULTS) {
-            setMapsError('Address lookup is unavailable. Try again soon.')
-          }
-          return
-        }
-        setMapsError(null)
-        setAddressOptions(
-          predictions.map((prediction) => ({
-            description: prediction.description,
-            place_id: prediction.place_id,
-          }))
-        )
+    if (addressAbort.current) {
+      addressAbort.current.abort()
+    }
+    const controller = new AbortController()
+    addressAbort.current = controller
+
+    const url = new URL(nominatimBaseUrl)
+    url.searchParams.set('format', 'json')
+    url.searchParams.set('addressdetails', '1')
+    url.searchParams.set('limit', '5')
+    url.searchParams.set('q', query)
+    url.searchParams.set('countrycodes', 'ca')
+
+    try {
+      const response = await fetch(url.toString(), {
+        signal: controller.signal,
+        headers: { Accept: 'application/json' },
+      })
+      if (!response.ok) {
+        throw new Error('Address lookup failed.')
       }
-    )
+      const results = (await response.json()) as NominatimResult[]
+      setAddressOptions(
+        results.map((result) => ({
+          description: result.display_name,
+          place_id: String(result.place_id),
+        }))
+      )
+    } catch (error) {
+      if ((error as Error).name !== 'AbortError') {
+        setAddressOptions([])
+      }
+    } finally {
+      setAddressLoading(false)
+    }
   }
 
   const handleAddressSelect = async (_: unknown, value: AddressSuggestion | string | null) => {
@@ -330,39 +310,35 @@ function App() {
     }
     setAddressSelection(value)
 
-    const ready = await ensureMapsReady()
-    if (!ready || !window.google?.maps?.places) return
     if (stops.length === 0) {
-      setMapsError('Stops data is not available yet. Please try again.')
       return
     }
 
     setAddressLoading(true)
-    const service = new window.google.maps.places.PlacesService(document.createElement('div'))
-    service.getDetails(
-      { placeId: value.place_id, fields: ['formatted_address', 'geometry'] },
-      (place: any, status: string) => {
-        setAddressLoading(false)
-        if (
-          status !== window.google.maps.places.PlacesServiceStatus.OK ||
-          !place?.geometry?.location
-        ) {
-          setMapsError('Unable to fetch that address. Try another entry.')
-          return
-        }
-        const location = {
-          lat: place.geometry.location.lat(),
-          lng: place.geometry.location.lng(),
-        }
-        const formattedAddress = place.formatted_address ?? value.description
-        const nearest = findNearestStop(stops, location.lat, location.lng)
-        setMapsError(null)
-        setAddressResult({ address: formattedAddress, location })
-        setAddressClosestStop(nearest)
-        setOrigin(nearest.stop)
-        setClosestStop(null)
+    const url = new URL(nominatimLookupUrl)
+    url.searchParams.set('format', 'json')
+    url.searchParams.set('addressdetails', '1')
+    url.searchParams.set('place_ids', value.place_id)
+
+    try {
+      const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } })
+      if (!response.ok) {
+        throw new Error('Address lookup failed.')
       }
-    )
+      const results = (await response.json()) as NominatimResult[]
+      const top = results[0]
+      if (!top) {
+        return
+      }
+      const location = { lat: Number(top.lat), lng: Number(top.lon) }
+      const nearest = findNearestStop(stops, location.lat, location.lng)
+      setAddressResult({ address: top.display_name, location })
+      setAddressClosestStop(nearest)
+      setOrigin(nearest.stop)
+      setClosestStop(null)
+    } finally {
+      setAddressLoading(false)
+    }
   }
 
   const directionsUrl = useMemo(() => {
@@ -375,7 +351,7 @@ function App() {
   const planResult = useMemo(() => {
     if (!origin || !destination) return null
     if (origin.stop_id === destination.stop_id) {
-      return { error: 'Pick two different stops to build a route.' }
+      return { kind: 'error' as const, error: 'Pick two different stops to build a route.' }
     }
 
     const candidates: CandidateTrip[] = []
@@ -401,21 +377,104 @@ function App() {
       })
     })
 
-    if (candidates.length === 0) {
-      return { error: 'No direct trips found between those stops.' }
-    }
-
     const now = new Date()
     const nowMinutes = now.getHours() * 60 + now.getMinutes()
     const sortedByTime = [...candidates].sort(
       (a, b) => timeToMinutes(a.boardTime) - timeToMinutes(b.boardTime)
     )
-    const nextTrip =
-      sortedByTime.find((candidate) => timeToMinutes(candidate.boardTime) >= nowMinutes) ??
-      sortedByTime[0]
-    const alternatives = sortedByTime.filter((candidate) => candidate.trip.trip_id !== nextTrip.trip.trip_id)
+    if (sortedByTime.length > 0) {
+      const nextTrip =
+        sortedByTime.find((candidate) => timeToMinutes(candidate.boardTime) >= nowMinutes) ??
+        sortedByTime[0]
+      const alternatives = sortedByTime.filter(
+        (candidate) => candidate.trip.trip_id !== nextTrip.trip.trip_id
+      )
 
-    return { nextTrip, alternatives }
+      return { kind: 'direct' as const, nextTrip, alternatives }
+    }
+
+    const createLeg = (
+      trip: Trip,
+      boardTime: StopTime,
+      alightTime: StopTime
+    ): CandidateTrip | null => {
+      const boardStop = stopById.get(boardTime.stop_id)
+      const alightStop = stopById.get(alightTime.stop_id)
+      if (!boardStop || !alightStop) return null
+      return {
+        trip,
+        route: routeById.get(trip.route_id),
+        boardStop,
+        alightStop,
+        boardTime: boardTime.departure_time,
+        alightTime: alightTime.arrival_time,
+        boardSequence: boardTime.stop_sequence,
+        alightSequence: alightTime.stop_sequence,
+      }
+    }
+
+    const leg2ByStop = new Map<string, CandidateTrip[]>()
+    trips.forEach((trip) => {
+      const stopTimes = stopTimesByTrip.get(trip.trip_id)
+      if (!stopTimes) return
+      const destIndex = stopTimes.findIndex((time) => time.stop_id === destination.stop_id)
+      if (destIndex <= 0) return
+      const alightTime = stopTimes[destIndex]
+      for (let i = 0; i < destIndex; i += 1) {
+        const boardTime = stopTimes[i]
+        const leg2 = createLeg(trip, boardTime, alightTime)
+        if (!leg2) continue
+        const list = leg2ByStop.get(boardTime.stop_id) ?? []
+        list.push(leg2)
+        leg2ByStop.set(boardTime.stop_id, list)
+      }
+    })
+
+    const transferPlans: TransferPlan[] = []
+    trips.forEach((trip) => {
+      const stopTimes = stopTimesByTrip.get(trip.trip_id)
+      if (!stopTimes) return
+      const originIndex = stopTimes.findIndex((time) => time.stop_id === origin.stop_id)
+      if (originIndex < 0 || originIndex >= stopTimes.length - 1) return
+      const boardTime = stopTimes[originIndex]
+      for (let i = originIndex + 1; i < stopTimes.length; i += 1) {
+        const alightTime = stopTimes[i]
+        const leg1 = createLeg(trip, boardTime, alightTime)
+        if (!leg1) continue
+        const leg2Options = leg2ByStop.get(alightTime.stop_id)
+        if (!leg2Options) continue
+        for (const leg2 of leg2Options) {
+          const layover = minutesBetween(leg1.alightTime, leg2.boardTime)
+          if (layover < 0) continue
+          const totalMinutes = minutesBetween(leg1.boardTime, leg2.alightTime)
+          if (totalMinutes < 0) continue
+          transferPlans.push({
+            firstLeg: leg1,
+            secondLeg: leg2,
+            transferStop: leg1.alightStop,
+            layoverMinutes: layover,
+            totalMinutes,
+          })
+        }
+      }
+    })
+
+    if (transferPlans.length === 0) {
+      return { kind: 'error' as const, error: 'No trips found between those stops.' }
+    }
+
+    const sortedTransfers = [...transferPlans].sort((a, b) => {
+      const timeDiff = timeToMinutes(a.firstLeg.boardTime) - timeToMinutes(b.firstLeg.boardTime)
+      if (timeDiff !== 0) return timeDiff
+      return a.totalMinutes - b.totalMinutes
+    })
+    const nextTransfer =
+      sortedTransfers.find(
+        (candidate) => timeToMinutes(candidate.firstLeg.boardTime) >= nowMinutes
+      ) ?? sortedTransfers[0]
+    const alternatives = sortedTransfers.filter((candidate) => candidate !== nextTransfer)
+
+    return { kind: 'transfer' as const, nextTransfer, alternatives }
   }, [destination, origin, routeById, stopById, stopTimesByTrip, trips])
 
   const handleUseMyLocation = () => {
@@ -576,24 +635,9 @@ function App() {
                       />
                     </Grid>
                     <Grid item xs={12} md={4}>
-                      <Stack spacing={1}>
-                        <Button
-                          variant="outlined"
-                          color="secondary"
-                          onClick={async () => {
-                            setAddressInput('')
-                            setAddressSelection(null)
-                            setAddressOptions([])
-                            setAddressResult(null)
-                            setAddressClosestStop(null)
-                            await ensureMapsReady()
-                          }}
-                          disabled={mapsReady}
-                        >
-                          {mapsReady ? 'Address search ready' : 'Enable address search'}
-                        </Button>
-                        {mapsError && <Alert severity="warning">{mapsError}</Alert>}
-                      </Stack>
+                      <Alert severity="info">
+                        Address search uses OpenStreetMap Nominatim results.
+                      </Alert>
                     </Grid>
                   </Grid>
 
@@ -712,9 +756,9 @@ function App() {
                     <Alert severity="info">
                       Choose both stops to see boarding times and the best bus to take.
                     </Alert>
-                  ) : planResult && 'error' in planResult ? (
+                  ) : planResult?.kind === 'error' ? (
                     <Alert severity="warning">{planResult.error}</Alert>
-                  ) : planResult ? (
+                  ) : planResult?.kind === 'direct' ? (
                     <Grid container spacing={2}>
                       <Grid item xs={12} md={7}>
                         <Card variant="outlined" sx={{ borderRadius: 3 }}>
@@ -723,7 +767,7 @@ function App() {
                               <Stack direction="row" alignItems="center" spacing={1}>
                                 <Chip
                                   label={`Route ${
-                                    planResult.nextTrip.route?.route_short_name ?? '–'
+                                    planResult.nextTrip.route?.route_short_name ?? 'Local'
                                   }`}
                                   color="secondary"
                                 />
@@ -775,10 +819,133 @@ function App() {
                                       <DirectionsBus color="action" />
                                     </ListItemIcon>
                                     <ListItemText
-                                      primary={`Route ${candidate.route?.route_short_name ?? '–'} — ${formatTime(
+                                      primary={`Route ${candidate.route?.route_short_name ?? 'Local'} ${formatTime(
                                         candidate.boardTime
                                       )}`}
                                       secondary={`Board at ${candidate.boardStop.stop_name}`}
+                                    />
+                                  </ListItem>
+                                ))}
+                              </List>
+                            )}
+                          </CardContent>
+                        </Card>
+                      </Grid>
+                    </Grid>
+                  ) : planResult?.kind === 'transfer' ? (
+                    <Grid container spacing={2}>
+                      <Grid item xs={12} md={7}>
+                        <Card variant="outlined" sx={{ borderRadius: 3 }}>
+                          <CardContent>
+                            <Stack spacing={2.5}>
+                              <Stack direction="row" alignItems="center" spacing={1}>
+                                <Chip
+                                  label={`Route ${
+                                    planResult.nextTransfer.firstLeg.route?.route_short_name ??
+                                    'Local'
+                                  }`}
+                                  color="secondary"
+                                />
+                                <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                                  First leg to {planResult.nextTransfer.transferStop.stop_name}
+                                </Typography>
+                              </Stack>
+                              <Typography variant="body2" color="text.secondary">
+                                Headed toward {planResult.nextTransfer.firstLeg.trip.trip_headsign}
+                              </Typography>
+                              <Stack direction="row" spacing={2} alignItems="center">
+                                <Place color="primary" fontSize="small" />
+                                <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                                  Board at {planResult.nextTransfer.firstLeg.boardStop.stop_name}
+                                </Typography>
+                              </Stack>
+                              <Stack direction="row" spacing={2} alignItems="center">
+                                <AccessTime color="primary" fontSize="small" />
+                                <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                                  Board at {formatTime(planResult.nextTransfer.firstLeg.boardTime)}
+                                </Typography>
+                              </Stack>
+                              <Stack direction="row" spacing={2} alignItems="center">
+                                <ArrowForward color="action" fontSize="small" />
+                                <Typography variant="body2" color="text.secondary">
+                                  Arrive by{' '}
+                                  {formatTime(planResult.nextTransfer.firstLeg.alightTime)} at{' '}
+                                  {planResult.nextTransfer.transferStop.stop_name}
+                                </Typography>
+                              </Stack>
+
+                              <Divider />
+
+                              <Stack direction="row" alignItems="center" spacing={1}>
+                                <Chip
+                                  label={`Route ${
+                                    planResult.nextTransfer.secondLeg.route?.route_short_name ??
+                                    'Local'
+                                  }`}
+                                  color="secondary"
+                                />
+                                <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                                  Second leg to{' '}
+                                  {planResult.nextTransfer.secondLeg.alightStop.stop_name}
+                                </Typography>
+                              </Stack>
+                              <Typography variant="body2" color="text.secondary">
+                                Headed toward {planResult.nextTransfer.secondLeg.trip.trip_headsign}
+                              </Typography>
+                              <Stack direction="row" spacing={2} alignItems="center">
+                                <Place color="primary" fontSize="small" />
+                                <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                                  Board at {planResult.nextTransfer.secondLeg.boardStop.stop_name}
+                                </Typography>
+                              </Stack>
+                              <Stack direction="row" spacing={2} alignItems="center">
+                                <AccessTime color="primary" fontSize="small" />
+                                <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                                  Board at {formatTime(planResult.nextTransfer.secondLeg.boardTime)}
+                                </Typography>
+                              </Stack>
+                              <Stack direction="row" spacing={2} alignItems="center">
+                                <ArrowForward color="action" fontSize="small" />
+                                <Typography variant="body2" color="text.secondary">
+                                  Arrive by{' '}
+                                  {formatTime(planResult.nextTransfer.secondLeg.alightTime)} at{' '}
+                                  {planResult.nextTransfer.secondLeg.alightStop.stop_name}
+                                </Typography>
+                              </Stack>
+                              <Stack direction="row" spacing={2} alignItems="center">
+                                <AccessTime color="action" fontSize="small" />
+                                <Typography variant="body2" color="text.secondary">
+                                  Layover: {Math.round(planResult.nextTransfer.layoverMinutes)} min
+                                </Typography>
+                              </Stack>
+                            </Stack>
+                          </CardContent>
+                        </Card>
+                      </Grid>
+                      <Grid item xs={12} md={5}>
+                        <Card variant="outlined" sx={{ borderRadius: 3 }}>
+                          <CardContent>
+                            <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1 }}>
+                              Other transfer options
+                            </Typography>
+                            {planResult.alternatives.length === 0 ? (
+                              <Typography variant="body2" color="text.secondary">
+                                No other two-leg trips for this pair.
+                              </Typography>
+                            ) : (
+                              <List dense>
+                                {planResult.alternatives.slice(0, 4).map((candidate, index) => (
+                                  <ListItem key={`${candidate.firstLeg.trip.trip_id}-${index}`}>
+                                    <ListItemIcon>
+                                      <DirectionsBus color="action" />
+                                    </ListItemIcon>
+                                    <ListItemText
+                                      primary={`Routes ${
+                                        candidate.firstLeg.route?.route_short_name ?? 'Local'
+                                      } -> ${candidate.secondLeg.route?.route_short_name ?? 'Local'} - ${formatTime(
+                                        candidate.firstLeg.boardTime
+                                      )}`}
+                                      secondary={`Transfer at ${candidate.transferStop.stop_name}`}
                                     />
                                   </ListItem>
                                 ))}
@@ -828,3 +995,7 @@ function App() {
 }
 
 export default App
+
+
+
+
