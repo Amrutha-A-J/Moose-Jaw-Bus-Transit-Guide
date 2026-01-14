@@ -1,5 +1,5 @@
 import './App.css'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AppBar,
   Box,
@@ -31,6 +31,7 @@ import {
 import {
   AccessTime,
   ArrowForward,
+  DirectionsWalk,
   DirectionsBus,
   MyLocation,
   Place,
@@ -81,6 +82,42 @@ type CandidateTrip = {
   alightSequence: number
 }
 
+type AddressSuggestion = {
+  description: string
+  place_id: string
+}
+
+type AddressResult = {
+  address: string
+  location: { lat: number; lng: number }
+}
+
+declare global {
+  interface Window {
+    google?: any
+  }
+}
+
+const googleMapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY
+let googleMapsScriptPromise: Promise<void> | null = null
+
+const loadGoogleMaps = (apiKey: string) => {
+  if (window.google?.maps?.places) return Promise.resolve()
+  if (googleMapsScriptPromise) return googleMapsScriptPromise
+
+  googleMapsScriptPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script')
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places&v=weekly`
+    script.async = true
+    script.defer = true
+    script.onload = () => resolve()
+    script.onerror = () => reject(new Error('Failed to load Google Maps.'))
+    document.head.appendChild(script)
+  })
+
+  return googleMapsScriptPromise
+}
+
 const parseCsv = (raw: string) => {
   const [headerLine, ...lines] = raw.trim().split(/\r?\n/)
   const headers = headerLine.split(',')
@@ -115,6 +152,19 @@ const haversineDistanceKm = (a: Stop, lat: number, lon: number) => {
   return 2 * earthRadiusKm * Math.asin(Math.sqrt(h))
 }
 
+const findNearestStop = (stops: Stop[], lat: number, lon: number) => {
+  let nearest = stops[0]
+  let nearestDistance = haversineDistanceKm(nearest, lat, lon)
+  for (const stop of stops) {
+    const distance = haversineDistanceKm(stop, lat, lon)
+    if (distance < nearestDistance) {
+      nearest = stop
+      nearestDistance = distance
+    }
+  }
+  return { stop: nearest, distanceKm: nearestDistance }
+}
+
 const theme = createTheme({
   typography: {
     fontFamily: '"Space Grotesk", "Segoe UI", sans-serif',
@@ -140,6 +190,18 @@ function App() {
   const [closestStop, setClosestStop] = useState<{ stop: Stop; distanceKm: number } | null>(
     null
   )
+  const [mapsReady, setMapsReady] = useState(false)
+  const [mapsError, setMapsError] = useState<string | null>(null)
+  const [addressInput, setAddressInput] = useState('')
+  const [addressSelection, setAddressSelection] = useState<AddressSuggestion | null>(null)
+  const [addressOptions, setAddressOptions] = useState<AddressSuggestion[]>([])
+  const [addressLoading, setAddressLoading] = useState(false)
+  const [addressResult, setAddressResult] = useState<AddressResult | null>(null)
+  const [addressClosestStop, setAddressClosestStop] = useState<{
+    stop: Stop
+    distanceKm: number
+  } | null>(null)
+  const addressTimeout = useRef<number | null>(null)
 
   const stops = useMemo<Stop[]>(() => {
     return parseCsv(stopsRaw).map((row) => ({
@@ -197,6 +259,118 @@ function App() {
   const stopOptions = useMemo(() => {
     return [...stops].sort((a, b) => a.stop_name.localeCompare(b.stop_name))
   }, [stops])
+
+  useEffect(() => {
+    if (!googleMapsApiKey) {
+      setMapsError('Add a Google Maps API key to enable address search.')
+    }
+  }, [googleMapsApiKey])
+
+  const ensureMapsReady = async () => {
+    if (!googleMapsApiKey) {
+      setMapsError('Add a Google Maps API key to enable address search.')
+      return false
+    }
+    try {
+      await loadGoogleMaps(googleMapsApiKey)
+      setMapsReady(true)
+      setMapsError(null)
+      return true
+    } catch {
+      setMapsError('Unable to load Google Maps right now.')
+      return false
+    }
+  }
+
+  const lookupAddressSuggestions = async (query: string) => {
+    if (!query.trim()) {
+      setAddressOptions([])
+      setAddressLoading(false)
+      return
+    }
+    const ready = await ensureMapsReady()
+    if (!ready || !window.google?.maps?.places) {
+      setAddressLoading(false)
+      return
+    }
+
+    const service = new window.google.maps.places.AutocompleteService()
+    service.getPlacePredictions(
+      {
+        input: query,
+        componentRestrictions: { country: 'ca' },
+        types: ['address'],
+      },
+      (predictions: any[], status: string) => {
+        setAddressLoading(false)
+        if (status !== window.google.maps.places.PlacesServiceStatus.OK || !predictions) {
+          setAddressOptions([])
+          if (status !== window.google.maps.places.PlacesServiceStatus.ZERO_RESULTS) {
+            setMapsError('Address lookup is unavailable. Try again soon.')
+          }
+          return
+        }
+        setMapsError(null)
+        setAddressOptions(
+          predictions.map((prediction) => ({
+            description: prediction.description,
+            place_id: prediction.place_id,
+          }))
+        )
+      }
+    )
+  }
+
+  const handleAddressSelect = async (_: unknown, value: AddressSuggestion | string | null) => {
+    setAddressResult(null)
+    setAddressClosestStop(null)
+    if (!value || typeof value === 'string') {
+      setAddressSelection(null)
+      return
+    }
+    setAddressSelection(value)
+
+    const ready = await ensureMapsReady()
+    if (!ready || !window.google?.maps?.places) return
+    if (stops.length === 0) {
+      setMapsError('Stops data is not available yet. Please try again.')
+      return
+    }
+
+    setAddressLoading(true)
+    const service = new window.google.maps.places.PlacesService(document.createElement('div'))
+    service.getDetails(
+      { placeId: value.place_id, fields: ['formatted_address', 'geometry'] },
+      (place: any, status: string) => {
+        setAddressLoading(false)
+        if (
+          status !== window.google.maps.places.PlacesServiceStatus.OK ||
+          !place?.geometry?.location
+        ) {
+          setMapsError('Unable to fetch that address. Try another entry.')
+          return
+        }
+        const location = {
+          lat: place.geometry.location.lat(),
+          lng: place.geometry.location.lng(),
+        }
+        const formattedAddress = place.formatted_address ?? value.description
+        const nearest = findNearestStop(stops, location.lat, location.lng)
+        setMapsError(null)
+        setAddressResult({ address: formattedAddress, location })
+        setAddressClosestStop(nearest)
+        setOrigin(nearest.stop)
+        setClosestStop(null)
+      }
+    )
+  }
+
+  const directionsUrl = useMemo(() => {
+    if (!addressResult || !addressClosestStop) return null
+    const originParam = encodeURIComponent(addressResult.address)
+    const destParam = `${addressClosestStop.stop.stop_lat},${addressClosestStop.stop.stop_lon}`
+    return `https://www.google.com/maps/dir/?api=1&origin=${originParam}&destination=${destParam}&travelmode=walking`
+  }, [addressClosestStop, addressResult])
 
   const planResult = useMemo(() => {
     if (!origin || !destination) return null
@@ -262,17 +436,9 @@ function App() {
     navigator.geolocation.getCurrentPosition(
       (position) => {
         const { latitude, longitude } = position.coords
-        let nearest = stops[0]
-        let nearestDistance = haversineDistanceKm(nearest, latitude, longitude)
-        for (const stop of stops) {
-          const distance = haversineDistanceKm(stop, latitude, longitude)
-          if (distance < nearestDistance) {
-            nearest = stop
-            nearestDistance = distance
-          }
-        }
-        setOrigin(nearest)
-        setClosestStop({ stop: nearest, distanceKm: nearestDistance })
+        const nearest = findNearestStop(stops, latitude, longitude)
+        setOrigin(nearest.stop)
+        setClosestStop(nearest)
         setGeolocating(false)
       },
       () => {
@@ -364,6 +530,96 @@ function App() {
                       </Typography>
                     </Box>
                   </Stack>
+
+                  <Grid container spacing={2}>
+                    <Grid item xs={12} md={8}>
+                      <Autocomplete
+                        freeSolo
+                        options={addressOptions}
+                        value={addressSelection}
+                        inputValue={addressInput}
+                          onChange={handleAddressSelect}
+                        onInputChange={(_, value, reason) => {
+                          setAddressInput(value)
+                          if (addressTimeout.current) {
+                            window.clearTimeout(addressTimeout.current)
+                          }
+                          if (reason === 'clear') {
+                            setAddressOptions([])
+                            setAddressSelection(null)
+                            setAddressClosestStop(null)
+                            setAddressResult(null)
+                            setAddressLoading(false)
+                            return
+                          }
+                          setAddressLoading(true)
+                          addressTimeout.current = window.setTimeout(() => {
+                            lookupAddressSuggestions(value)
+                          }, 350)
+                        }}
+                        filterOptions={(options) => options}
+                        getOptionLabel={(option) =>
+                          typeof option === 'string' ? option : option.description
+                        }
+                          isOptionEqualToValue={(option, value) =>
+                            typeof value !== 'string' && option.place_id === value.place_id
+                          }
+                        loading={addressLoading}
+                        renderInput={(params) => (
+                          <TextField
+                            {...params}
+                            label="Enter your address"
+                            placeholder="Start with your street address"
+                            helperText="We will suggest your closest stop and set it as your start."
+                          />
+                        )}
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={4}>
+                      <Stack spacing={1}>
+                        <Button
+                          variant="outlined"
+                          color="secondary"
+                          onClick={async () => {
+                            setAddressInput('')
+                            setAddressSelection(null)
+                            setAddressOptions([])
+                            setAddressResult(null)
+                            setAddressClosestStop(null)
+                            await ensureMapsReady()
+                          }}
+                          disabled={mapsReady}
+                        >
+                          {mapsReady ? 'Address search ready' : 'Enable address search'}
+                        </Button>
+                        {mapsError && <Alert severity="warning">{mapsError}</Alert>}
+                      </Stack>
+                    </Grid>
+                  </Grid>
+
+                  {addressClosestStop && addressResult && (
+                    <Alert
+                      severity="success"
+                      action={
+                        directionsUrl ? (
+                          <Button
+                            size="small"
+                            color="secondary"
+                            variant="outlined"
+                            startIcon={<DirectionsWalk />}
+                            href={directionsUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Walking directions
+                          </Button>
+                        ) : null
+                      }
+                    >
+                      Closest stop to {addressResult.address}: {addressClosestStop.stop.stop_name}{' '}
+                      ({addressClosestStop.distanceKm.toFixed(2)} km away). Start stop set.
+                    </Alert>
+                  )}
 
                   <Grid container spacing={2} alignItems="center">
                     <Grid item xs={12} md={5}>

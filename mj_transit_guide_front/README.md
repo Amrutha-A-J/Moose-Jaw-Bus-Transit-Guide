@@ -2,6 +2,14 @@
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
+## Google Maps setup
+
+The route planner uses Google Places to look up addresses and find the nearest stop.
+
+1. Create a `.env` file in this folder.
+2. Add `VITE_GOOGLE_MAPS_API_KEY=your_key_here`.
+3. Enable the Maps JavaScript API and Places API for the key.
+
 Currently, two official plugins are available:
 
 - [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
