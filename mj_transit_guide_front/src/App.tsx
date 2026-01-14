@@ -1,5 +1,5 @@
 ﻿import './App.css'
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AppBar,
   Box,
@@ -129,6 +129,11 @@ const timeToMinutes = (value: string) => {
   return hours * 60 + minutes + seconds / 60
 }
 
+const getNowMinutes = () => {
+  const now = new Date()
+  return now.getHours() * 60 + now.getMinutes()
+}
+
 const formatTime = (value: string) => value.slice(0, 5)
 const minutesBetween = (start: string, end: string) => timeToMinutes(end) - timeToMinutes(start)
 
@@ -226,6 +231,7 @@ function App() {
     stop: Stop
     distanceKm: number
   } | null>(null)
+  const [nowMinutes, setNowMinutes] = useState(getNowMinutes)
   const addressTimeout = useRef<number | null>(null)
   const addressAbort = useRef<AbortController | null>(null)
 
@@ -397,6 +403,13 @@ function App() {
     return `https://www.google.com/maps/dir/?api=1&origin=${originParam}&destination=${destParam}&travelmode=walking`
   }, [addressClosestStop, addressResult])
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNowMinutes(getNowMinutes())
+    }, 60000)
+    return () => window.clearInterval(timer)
+  }, [])
+
   const planResult = useMemo(() => {
     if (!origin || !destination) return null
     if (origin.stop_id === destination.stop_id) {
@@ -426,18 +439,17 @@ function App() {
       })
     })
 
-    const now = new Date()
-    const nowMinutes = now.getHours() * 60 + now.getMinutes()
     const sortedByTime = [...candidates].sort(
       (a, b) => timeToMinutes(a.boardTime) - timeToMinutes(b.boardTime)
     )
     if (sortedByTime.length > 0) {
-      const nextTrip =
-        sortedByTime.find((candidate) => timeToMinutes(candidate.boardTime) >= nowMinutes) ??
-        sortedByTime[0]
-      const alternatives = sortedByTime.filter(
-        (candidate) => candidate.trip.trip_id !== nextTrip.trip.trip_id
+      const upcoming = sortedByTime.filter(
+        (candidate) => timeToMinutes(candidate.boardTime) >= nowMinutes
       )
+      if (upcoming.length === 0) {
+        return { kind: 'error' as const, error: 'No more departures today from this stop.' }
+      }
+      const [nextTrip, ...alternatives] = upcoming
 
       return { kind: 'direct' as const, nextTrip, alternatives }
     }
@@ -517,14 +529,16 @@ function App() {
       if (timeDiff !== 0) return timeDiff
       return a.totalMinutes - b.totalMinutes
     })
-    const nextTransfer =
-      sortedTransfers.find(
-        (candidate) => timeToMinutes(candidate.firstLeg.boardTime) >= nowMinutes
-      ) ?? sortedTransfers[0]
-    const alternatives = sortedTransfers.filter((candidate) => candidate !== nextTransfer)
+    const upcomingTransfers = sortedTransfers.filter(
+      (candidate) => timeToMinutes(candidate.firstLeg.boardTime) >= nowMinutes
+    )
+    if (upcomingTransfers.length === 0) {
+      return { kind: 'error' as const, error: 'No more departures today from this stop.' }
+    }
+    const [nextTransfer, ...alternatives] = upcomingTransfers
 
     return { kind: 'transfer' as const, nextTransfer, alternatives }
-  }, [destination, origin, routeById, stopById, stopTimesByTrip, trips])
+  }, [destination, nowMinutes, origin, routeById, stopById, stopTimesByTrip, trips])
 
   const handleUseMyLocation = () => {
     if (!navigator.geolocation) {
