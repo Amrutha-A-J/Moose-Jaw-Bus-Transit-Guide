@@ -249,6 +249,14 @@ function App() {
       setGeoError('Geolocation is not supported by this browser.')
       return
     }
+    if (!window.isSecureContext) {
+      setGeoError('Location access requires HTTPS or localhost.')
+      return
+    }
+    if (stops.length === 0) {
+      setGeoError('Stops data is not available yet. Please try again.')
+      return
+    }
     setGeolocating(true)
     setGeoError(null)
     navigator.geolocation.getCurrentPosition(
