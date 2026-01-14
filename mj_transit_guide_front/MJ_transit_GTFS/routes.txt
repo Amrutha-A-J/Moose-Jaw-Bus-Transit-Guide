@@ -1,0 +1,9 @@
+route_id,route_short_name,route_long_name,route_desc,route_url,route_color,route_text_color,route_type
+7705,3,Athabasca West/Thatcher,Athabasca West/Thatcher Route,,92A1F7,030303,3
+7706,4,Westmount,Westmount Route,,FF00FF,030303,3
+64036,NYE 1,New Years Eve - Athabasca East,NYE - Athabasca East,,5bcd68,000000,3
+64037,NYE 2,New Years Eve - Sunningdale,NYE - Sunningdale,,f3c33f,,3
+64038,NYE 3,New Years Eve - Athabasca West/Thatcher,NYE- Athabasca West/Thatcher,,92A1F7,,3
+64039,NYE 4,New Years Eve - Westmount,NYE - Westmount,,FF00FF,,3
+7703,1,Athabasca East,Athabasca East Route,,78f278,030303,3
+7704,2,Sunningdale,Sunningdale Route,,FFA500,030303,3

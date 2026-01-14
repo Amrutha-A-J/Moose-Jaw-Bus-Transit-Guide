@@ -1,0 +1,2 @@
+agency_id,agency_name,agency_url,agency_timezone,agency_lang,agency_phone,agency_fare_url,agency_email
+,City of Moose Jaw,https://moosejaw.ca,America/Regina,EN,306-694-4488,https://moosejaw.ca/streets-roads/transit/transit-fares/,
