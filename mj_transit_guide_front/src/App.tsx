@@ -348,16 +348,71 @@ function App() {
     }
   }
 
+  const applyAddressResult = (top: NominatimResult) => {
+    const location = { lat: Number(top.lat), lng: Number(top.lon) }
+    const candidateStops = destination ? eligibleStopsForDestination : stops
+    if (candidateStops.length === 0) {
+      setAddressResult({ address: top.display_name, location })
+      setAddressClosestStop(null)
+      setOrigin(null)
+      setClosestStop(null)
+      return
+    }
+    const nearest = findNearestStop(candidateStops, location.lat, location.lng)
+    setAddressResult({ address: top.display_name, location })
+    setAddressClosestStop(nearest)
+    setOrigin(nearest.stop)
+    setClosestStop(null)
+  }
+
   const handleAddressSelect = async (_: unknown, value: AddressSuggestion | string | null) => {
     setAddressResult(null)
     setAddressClosestStop(null)
-    if (!value || typeof value === 'string') {
+    if (!value) {
       setAddressSelection(null)
+      return
+    }
+    if (typeof value === 'string') {
+      const query = value.trim()
+      if (!query) {
+        setAddressSelection(null)
+        setAddressLoading(false)
+        return
+      }
+      setAddressLoading(true)
+      const url = new URL(nominatimBaseUrl)
+      url.searchParams.set('format', 'json')
+      url.searchParams.set('addressdetails', '1')
+      url.searchParams.set('limit', '1')
+      url.searchParams.set('q', query)
+      url.searchParams.set('countrycodes', 'ca')
+      try {
+        const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } })
+        if (!response.ok) {
+          throw new Error('Address lookup failed.')
+        }
+        const results = (await response.json()) as NominatimResult[]
+        const top = results[0]
+        if (!top) {
+          return
+        }
+        setAddressSelection({
+          description: top.display_name,
+          place_id: String(top.place_id),
+        })
+        if (stops.length === 0) {
+          return
+        }
+        applyAddressResult(top)
+      } finally {
+        setAddressLoading(false)
+      }
       return
     }
     setAddressSelection(value)
 
     if (stops.length === 0) {
+      setAddressLoading(false)
       return
     }
 
@@ -377,20 +432,7 @@ function App() {
       if (!top) {
         return
       }
-      const location = { lat: Number(top.lat), lng: Number(top.lon) }
-      const candidateStops = destination ? eligibleStopsForDestination : stops
-      if (candidateStops.length === 0) {
-        setAddressResult({ address: top.display_name, location })
-        setAddressClosestStop(null)
-        setOrigin(null)
-        setClosestStop(null)
-        return
-      }
-      const nearest = findNearestStop(candidateStops, location.lat, location.lng)
-      setAddressResult({ address: top.display_name, location })
-      setAddressClosestStop(nearest)
-      setOrigin(nearest.stop)
-      setClosestStop(null)
+      applyAddressResult(top)
     } finally {
       setAddressLoading(false)
     }
