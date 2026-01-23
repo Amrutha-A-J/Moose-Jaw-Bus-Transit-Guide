@@ -11,7 +11,6 @@ import {
   CssBaseline,
   Divider,
   Grid,
-  IconButton,
   List,
   ListItem,
   ListItemIcon,
@@ -25,7 +24,6 @@ import {
   Autocomplete,
   TextField,
   Alert,
-  Tooltip,
   CircularProgress,
 } from '@mui/material'
 import {
@@ -35,7 +33,6 @@ import {
   DirectionsBus,
   MyLocation,
   Place,
-  SwapVert,
 } from '@mui/icons-material'
 import stopsRaw from '../MJ_transit_GTFS/stops.txt?raw'
 import stopTimesRaw from '../MJ_transit_GTFS/stop_times.txt?raw'
@@ -93,6 +90,8 @@ type TransferPlan = {
 type AddressSuggestion = {
   description: string
   place_id: string
+  source: 'nominatim' | 'geocoder'
+  location?: { lat: number; lng: number }
 }
 
 type AddressResult = {
@@ -107,8 +106,26 @@ type NominatimResult = {
   lon: string
 }
 
+type NominatimReverseResult = {
+  place_id: number
+  display_name: string
+}
+
+type GeocoderResult = {
+  latt?: string
+  longt?: string
+  standard?: {
+    staddress?: string
+    stnumber?: string
+    city?: string
+    prov?: string
+  }
+}
+
 const nominatimBaseUrl = 'https://nominatim.openstreetmap.org/search'
 const nominatimLookupUrl = 'https://nominatim.openstreetmap.org/lookup'
+const nominatimReverseUrl = 'https://nominatim.openstreetmap.org/reverse'
+const geocoderBaseUrl = 'https://geocoder.ca/'
 
 const parseCsv = (raw: string) => {
   const [headerLine, ...lines] = raw.trim().split(/\r?\n/)
@@ -317,14 +334,15 @@ function App() {
     const controller = new AbortController()
     addressAbort.current = controller
 
-    const url = new URL(nominatimBaseUrl)
-    url.searchParams.set('format', 'json')
-    url.searchParams.set('addressdetails', '1')
-    url.searchParams.set('limit', '5')
-    url.searchParams.set('q', query)
-    url.searchParams.set('countrycodes', 'ca')
-
-    try {
+    const trimmedQuery = query.trim()
+    const isHouseNumberQuery = /^\d{1,6}\s+/.test(trimmedQuery)
+    const fetchNominatim = async () => {
+      const url = new URL(nominatimBaseUrl)
+      url.searchParams.set('format', 'json')
+      url.searchParams.set('addressdetails', '1')
+      url.searchParams.set('limit', '5')
+      url.searchParams.set('q', trimmedQuery)
+      url.searchParams.set('countrycodes', 'ca')
       const response = await fetch(url.toString(), {
         signal: controller.signal,
         headers: { Accept: 'application/json' },
@@ -333,12 +351,64 @@ function App() {
         throw new Error('Address lookup failed.')
       }
       const results = (await response.json()) as NominatimResult[]
-      setAddressOptions(
-        results.map((result) => ({
-          description: result.display_name,
-          place_id: String(result.place_id),
-        }))
-      )
+      return results.map((result) => ({
+        description: result.display_name,
+        place_id: String(result.place_id),
+        source: 'nominatim' as const,
+      }))
+    }
+    const fetchGeocoder = async () => {
+      if (!isHouseNumberQuery) return null
+      const url = new URL(geocoderBaseUrl)
+      url.searchParams.set('locate', trimmedQuery)
+      url.searchParams.set('json', '1')
+      const response = await fetch(url.toString(), {
+        signal: controller.signal,
+        headers: { Accept: 'application/json' },
+      })
+      if (!response.ok) {
+        return null
+      }
+      const result = (await response.json()) as GeocoderResult
+      const lat = Number(result.latt)
+      const lng = Number(result.longt)
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return null
+      }
+      const standard = result.standard
+      const stnumber = standard?.stnumber?.trim()
+      const staddress = standard?.staddress?.trim()
+      const city = standard?.city?.trim()
+      const prov = standard?.prov?.trim()
+      if (!stnumber || !staddress || !city || !prov) {
+        return null
+      }
+      const description = `${stnumber} ${staddress}, ${city}, ${prov}`
+      return {
+        description,
+        place_id: `geocoder:${stnumber}-${staddress}-${city}-${prov}`,
+        source: 'geocoder' as const,
+        location: { lat, lng },
+      }
+    }
+
+    try {
+      const [nominatimResult, geocoderResult] = await Promise.allSettled([
+        fetchNominatim(),
+        fetchGeocoder(),
+      ])
+      const options: AddressSuggestion[] = []
+      if (geocoderResult.status === 'fulfilled' && geocoderResult.value) {
+        options.push(geocoderResult.value)
+      }
+      if (nominatimResult.status === 'fulfilled') {
+        nominatimResult.value.forEach((option) => {
+          if (!options.some((existing) => existing.description === option.description)) {
+            options.push(option)
+          }
+        })
+      }
+      setAddressOptions(options)
     } catch (error) {
       if ((error as Error).name !== 'AbortError') {
         setAddressOptions([])
@@ -348,18 +418,17 @@ function App() {
     }
   }
 
-  const applyAddressResult = (top: NominatimResult) => {
-    const location = { lat: Number(top.lat), lng: Number(top.lon) }
+  const applyAddressLocation = (address: string, location: { lat: number; lng: number }) => {
     const candidateStops = destination ? eligibleStopsForDestination : stops
     if (candidateStops.length === 0) {
-      setAddressResult({ address: top.display_name, location })
+      setAddressResult({ address, location })
       setAddressClosestStop(null)
       setOrigin(null)
       setClosestStop(null)
       return
     }
     const nearest = findNearestStop(candidateStops, location.lat, location.lng)
-    setAddressResult({ address: top.display_name, location })
+    setAddressResult({ address, location })
     setAddressClosestStop(nearest)
     setOrigin(nearest.stop)
     setClosestStop(null)
@@ -380,13 +449,54 @@ function App() {
         return
       }
       setAddressLoading(true)
-      const url = new URL(nominatimBaseUrl)
-      url.searchParams.set('format', 'json')
-      url.searchParams.set('addressdetails', '1')
-      url.searchParams.set('limit', '1')
-      url.searchParams.set('q', query)
-      url.searchParams.set('countrycodes', 'ca')
       try {
+        const isHouseNumberQuery = /^\d{1,6}\s+/.test(query)
+        if (isHouseNumberQuery) {
+          const geocoderUrl = new URL(geocoderBaseUrl)
+          geocoderUrl.searchParams.set('locate', query)
+          geocoderUrl.searchParams.set('json', '1')
+          const geocoderResponse = await fetch(geocoderUrl.toString(), {
+            headers: { Accept: 'application/json' },
+          })
+          if (geocoderResponse.ok) {
+            const result = (await geocoderResponse.json()) as GeocoderResult
+            const lat = Number(result.latt)
+            const lng = Number(result.longt)
+            const standard = result.standard
+            const stnumber = standard?.stnumber?.trim()
+            const staddress = standard?.staddress?.trim()
+            const city = standard?.city?.trim()
+            const prov = standard?.prov?.trim()
+            if (
+              Number.isFinite(lat) &&
+              Number.isFinite(lng) &&
+              stnumber &&
+              staddress &&
+              city &&
+              prov
+            ) {
+              const description = `${stnumber} ${staddress}, ${city}, ${prov}`
+              setAddressSelection({
+                description,
+                place_id: `geocoder:${stnumber}-${staddress}-${city}-${prov}`,
+                source: 'geocoder',
+                location: { lat, lng },
+              })
+              if (stops.length === 0) {
+                return
+              }
+              applyAddressLocation(description, { lat, lng })
+              return
+            }
+          }
+        }
+
+        const url = new URL(nominatimBaseUrl)
+        url.searchParams.set('format', 'json')
+        url.searchParams.set('addressdetails', '1')
+        url.searchParams.set('limit', '1')
+        url.searchParams.set('q', query)
+        url.searchParams.set('countrycodes', 'ca')
         const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } })
         if (!response.ok) {
           throw new Error('Address lookup failed.')
@@ -399,14 +509,26 @@ function App() {
         setAddressSelection({
           description: top.display_name,
           place_id: String(top.place_id),
+          source: 'nominatim',
         })
         if (stops.length === 0) {
           return
         }
-        applyAddressResult(top)
+        const location = { lat: Number(top.lat), lng: Number(top.lon) }
+        applyAddressLocation(top.display_name, location)
       } finally {
         setAddressLoading(false)
       }
+      return
+    }
+    if (value.source === 'geocoder' && value.location) {
+      setAddressSelection(value)
+      if (stops.length === 0) {
+        setAddressLoading(false)
+        return
+      }
+      applyAddressLocation(value.description, value.location)
+      setAddressLoading(false)
       return
     }
     setAddressSelection(value)
@@ -432,7 +554,8 @@ function App() {
       if (!top) {
         return
       }
-      applyAddressResult(top)
+      const location = { lat: Number(top.lat), lng: Number(top.lon) }
+      applyAddressLocation(top.display_name, location)
     } finally {
       setAddressLoading(false)
     }
@@ -602,17 +725,52 @@ function App() {
     }
     setGeolocating(true)
     setGeoError(null)
+    setAddressLoading(true)
     navigator.geolocation.getCurrentPosition(
-      (position) => {
+      async (position) => {
         const { latitude, longitude } = position.coords
         const nearest = findNearestStop(candidateStops, latitude, longitude)
         setOrigin(nearest.stop)
         setClosestStop(nearest)
+        setAddressOptions([])
+        setAddressSelection(null)
+        setAddressResult(null)
+        setAddressClosestStop(null)
+        const location = { lat: latitude, lng: longitude }
+        let address = 'Current location'
+        try {
+          const reverseUrl = new URL(nominatimReverseUrl)
+          reverseUrl.searchParams.set('format', 'json')
+          reverseUrl.searchParams.set('lat', latitude.toString())
+          reverseUrl.searchParams.set('lon', longitude.toString())
+          reverseUrl.searchParams.set('zoom', '18')
+          reverseUrl.searchParams.set('addressdetails', '1')
+          const response = await fetch(reverseUrl.toString(), {
+            headers: { Accept: 'application/json' },
+          })
+          if (response.ok) {
+            const result = (await response.json()) as NominatimReverseResult
+            if (result.display_name) {
+              address = result.display_name
+              setAddressSelection({
+                description: result.display_name,
+                place_id: String(result.place_id),
+                source: 'nominatim',
+              })
+            }
+          }
+        } catch {
+          // If reverse geocoding fails, keep a simple label.
+        }
+        setAddressInput(address)
+        applyAddressLocation(address, location)
         setGeolocating(false)
+        setAddressLoading(false)
       },
       () => {
         setGeoError('Unable to access your location. Check browser permissions.')
         setGeolocating(false)
+        setAddressLoading(false)
       },
       { enableHighAccuracy: true, timeout: 8000 }
     )
@@ -695,13 +853,14 @@ function App() {
                         Route planner (GTFS)
                       </Typography>
                       <Typography variant="body2" color="text.secondary">
-                        Select a start and end stop to see which bus to board and when.
+                        Enter your address (or use near me) and choose a destination stop to plan
+                        your trip.
                       </Typography>
                     </Box>
                   </Stack>
 
-                  <Grid container spacing={2}>
-                    <Grid item xs={12} md={8}>
+                  <Grid container spacing={2} alignItems="center">
+                    <Grid item xs={12} md={7}>
                       <Autocomplete
                         freeSolo
                         options={addressOptions}
@@ -730,9 +889,9 @@ function App() {
                         getOptionLabel={(option) =>
                           typeof option === 'string' ? option : option.description
                         }
-                          isOptionEqualToValue={(option, value) =>
-                            typeof value !== 'string' && option.place_id === value.place_id
-                          }
+                        isOptionEqualToValue={(option, value) =>
+                          typeof value !== 'string' && option.place_id === value.place_id
+                        }
                         loading={addressLoading}
                         renderInput={(params) => (
                           <TextField
@@ -744,7 +903,25 @@ function App() {
                         )}
                       />
                     </Grid>
-                    <Grid item xs={12} md={4}>
+                    <Grid item xs={12} md={2}>
+                      <Button
+                        fullWidth
+                        variant="outlined"
+                        color="secondary"
+                        onClick={handleUseMyLocation}
+                        startIcon={
+                          geolocating ? (
+                            <CircularProgress size={16} color="inherit" />
+                          ) : (
+                            <MyLocation />
+                          )
+                        }
+                        disabled={geolocating}
+                      >
+                        Near me
+                      </Button>
+                    </Grid>
+                    <Grid item xs={12} md={3}>
                       <Alert severity="info">
                         Address search uses OpenStreetMap Nominatim results.
                       </Alert>
@@ -776,45 +953,7 @@ function App() {
                   )}
 
                   <Grid container spacing={2} alignItems="center">
-                    <Grid item xs={12} md={5}>
-                      <Autocomplete
-                        options={stopOptions}
-                        value={origin}
-                        onChange={(_, value) => {
-                          setOrigin(value)
-                          setClosestStop(null)
-                        }}
-                        getOptionLabel={(option) => option.stop_name}
-                        isOptionEqualToValue={(option, value) =>
-                          option.stop_id === value.stop_id
-                        }
-                        renderInput={(params) => (
-                          <TextField
-                            {...params}
-                            label="Start stop"
-                            placeholder="Choose a boarding stop"
-                          />
-                        )}
-                      />
-                    </Grid>
-                    <Grid item xs={12} md={1} sx={{ textAlign: 'center' }}>
-                      <Tooltip title="Swap stops">
-                        <span>
-                          <IconButton
-                            color="primary"
-                            onClick={() => {
-                              if (!origin && !destination) return
-                              setOrigin(destination)
-                              setDestination(origin)
-                              setClosestStop(null)
-                            }}
-                          >
-                            <SwapVert />
-                          </IconButton>
-                        </span>
-                      </Tooltip>
-                    </Grid>
-                    <Grid item xs={12} md={5}>
+                    <Grid item xs={12} md={6}>
                       <Autocomplete
                         options={stopOptions}
                         value={destination}
@@ -832,23 +971,6 @@ function App() {
                         )}
                       />
                     </Grid>
-                    <Grid item xs={12} md={1} sx={{ textAlign: { xs: 'left', md: 'right' } }}>
-                      <Button
-                        variant="outlined"
-                        color="secondary"
-                        onClick={handleUseMyLocation}
-                        startIcon={
-                          geolocating ? (
-                            <CircularProgress size={16} color="inherit" />
-                          ) : (
-                            <MyLocation />
-                          )
-                        }
-                        disabled={geolocating}
-                      >
-                        Near me
-                      </Button>
-                    </Grid>
                   </Grid>
 
                   {geoError && <Alert severity="warning">{geoError}</Alert>}
@@ -864,7 +986,8 @@ function App() {
 
                   {!origin || !destination ? (
                     <Alert severity="info">
-                      Choose both stops to see boarding times and the best bus to take.
+                      Choose a destination and set your start with an address or near me to see
+                      boarding times.
                     </Alert>
                   ) : planResult?.kind === 'error' ? (
                     <Alert severity="warning">{planResult.error}</Alert>
