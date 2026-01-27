@@ -6,6 +6,21 @@ This template provides a minimal setup to get React working in Vite with HMR and
 
 The route planner uses OpenStreetMap Nominatim to look up addresses and find the nearest stop.
 
+## GitHub Pages deployment
+
+1) Update `package.json` with your repo info:
+- `homepage`: `https://<username>.github.io/<repo>/`
+- `deploy` script: replace `<repo>` in `VITE_BASE_PATH=/<repo>/`
+
+2) Deploy:
+```
+npm run deploy
+```
+
+Notes:
+- For a user/organization site (repo named `<username>.github.io`), set `VITE_BASE_PATH=/` and update `homepage` to `https://<username>.github.io/`.
+- The `deploy` script builds and publishes `dist` to the `gh-pages` branch.
+
 Currently, two official plugins are available:
 
 - [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh

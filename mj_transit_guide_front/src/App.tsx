@@ -33,6 +33,7 @@ import {
   DirectionsBus,
   MyLocation,
   Place,
+  SwapHoriz,
 } from '@mui/icons-material'
 import stopsRaw from '../MJ_transit_GTFS/stops.txt?raw'
 import stopTimesRaw from '../MJ_transit_GTFS/stop_times.txt?raw'
@@ -1466,6 +1467,49 @@ function App() {
     )
   }
 
+  const handleSwapAddresses = () => {
+    setGeoError(null)
+    setAddressError(null)
+    setDestinationError(null)
+
+    const nextAddressInput = destinationInput
+    const nextDestinationInput = addressInput
+    const nextAddressSelection = destinationSelection
+    const nextDestinationSelection = addressSelection
+    const nextAddressResult = destinationResult
+    const nextDestinationResult = addressResult
+
+    setAddressInput(nextAddressInput)
+    setDestinationInput(nextDestinationInput)
+    setAddressSelection(nextAddressSelection)
+    setDestinationSelection(nextDestinationSelection)
+
+    if (stops.length === 0) {
+      setAddressResult(nextAddressResult)
+      setDestinationResult(nextDestinationResult)
+      setDestination(null)
+      setOrigin(null)
+      setAddressClosestStop(null)
+      return
+    }
+
+    setDestinationResult(nextDestinationResult)
+    if (nextDestinationResult) {
+      const nearest = findNearestStop(
+        stops,
+        nextDestinationResult.location.lat,
+        nextDestinationResult.location.lng
+      )
+      setDestination(nearest.stop)
+    } else {
+      setDestination(null)
+    }
+
+    setAddressResult(nextAddressResult)
+    setOrigin(null)
+    setAddressClosestStop(null)
+  }
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
@@ -1595,7 +1639,7 @@ function App() {
                   </Grid>
 
                   <Grid container spacing={2} alignItems="center">
-                    <Grid item xs={12} md={9}>
+                    <Grid item xs={12} md={8}>
                       <Autocomplete
                         freeSolo
                         options={destinationOptions}
@@ -1640,6 +1684,18 @@ function App() {
                           />
                         )}
                       />
+                    </Grid>
+                    <Grid item xs={12} md={4}>
+                      <Button
+                        fullWidth
+                        variant="outlined"
+                        color="primary"
+                        startIcon={<SwapHoriz />}
+                        onClick={handleSwapAddresses}
+                        disabled={!addressInput && !destinationInput}
+                      >
+                        Swap addresses
+                      </Button>
                     </Grid>
                   </Grid>
 
