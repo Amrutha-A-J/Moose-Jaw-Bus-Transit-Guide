@@ -247,9 +247,6 @@ function App() {
   const [destination, setDestination] = useState<Stop | null>(null)
   const [geolocating, setGeolocating] = useState(false)
   const [geoError, setGeoError] = useState<string | null>(null)
-  const [closestStop, setClosestStop] = useState<{ stop: Stop; distanceKm: number } | null>(
-    null
-  )
   const [addressInput, setAddressInput] = useState('')
   const [addressSelection, setAddressSelection] = useState<AddressSuggestion | null>(null)
   const [addressOptions, setAddressOptions] = useState<AddressSuggestion[]>([])
@@ -264,10 +261,6 @@ function App() {
   const [destinationOptions, setDestinationOptions] = useState<AddressSuggestion[]>([])
   const [destinationLoading, setDestinationLoading] = useState(false)
   const [destinationResult, setDestinationResult] = useState<AddressResult | null>(null)
-  const [destinationClosestStop, setDestinationClosestStop] = useState<{
-    stop: Stop
-    distanceKm: number
-  } | null>(null)
   const [nowMinutes, setNowMinutes] = useState(getNowMinutes)
   const addressTimeout = useRef<number | null>(null)
   const addressAbort = useRef<AbortController | null>(null)
@@ -539,31 +532,31 @@ function App() {
   }
 
   const applyAddressLocation = (address: string, location: { lat: number; lng: number }) => {
-    const candidateStops = destination ? eligibleStopsForDestination : stops
-    if (candidateStops.length === 0) {
-      setAddressResult({ address, location })
+    setAddressResult({ address, location })
+    if (!destination) {
       setAddressClosestStop(null)
       setOrigin(null)
-      setClosestStop(null)
+      return
+    }
+    const candidateStops = eligibleStopsForDestination
+    if (candidateStops.length === 0) {
+      setAddressClosestStop(null)
+      setOrigin(null)
       return
     }
     const nearest = findNearestStop(candidateStops, location.lat, location.lng)
-    setAddressResult({ address, location })
     setAddressClosestStop(nearest)
     setOrigin(nearest.stop)
-    setClosestStop(null)
   }
 
   const applyDestinationLocation = (address: string, location: { lat: number; lng: number }) => {
     if (stops.length === 0) {
       setDestinationResult({ address, location })
-      setDestinationClosestStop(null)
       setDestination(null)
       return
     }
     const nearest = findNearestStop(stops, location.lat, location.lng)
     setDestinationResult({ address, location })
-    setDestinationClosestStop(nearest)
     setDestination(nearest.stop)
   }
 
@@ -572,6 +565,7 @@ function App() {
     setAddressClosestStop(null)
     if (!value) {
       setAddressSelection(null)
+      setOrigin(null)
       return
     }
     if (typeof value === 'string') {
@@ -699,10 +693,11 @@ function App() {
     value: AddressSuggestion | string | null
   ) => {
     setDestinationResult(null)
-    setDestinationClosestStop(null)
     if (!value) {
       setDestinationSelection(null)
       setDestination(null)
+      setOrigin(null)
+      setAddressClosestStop(null)
       return
     }
     if (typeof value === 'string') {
@@ -823,6 +818,23 @@ function App() {
     }, 60000)
     return () => window.clearInterval(timer)
   }, [])
+
+  useEffect(() => {
+    if (!addressResult || !destination) return
+    const candidateStops = eligibleStopsForDestination
+    if (candidateStops.length === 0) {
+      setAddressClosestStop(null)
+      setOrigin(null)
+      return
+    }
+    const nearest = findNearestStop(
+      candidateStops,
+      addressResult.location.lat,
+      addressResult.location.lng
+    )
+    setAddressClosestStop(nearest)
+    setOrigin(nearest.stop)
+  }, [addressResult, destination, eligibleStopsForDestination])
 
   const planResult = useMemo(() => {
     if (!origin || !destination) return null
@@ -979,20 +991,12 @@ function App() {
       setGeoError('Stops data is not available yet. Please try again.')
       return
     }
-    const candidateStops = destination ? eligibleStopsForDestination : stops
-    if (candidateStops.length === 0) {
-      setGeoError('No stops found that serve that destination.')
-      return
-    }
     setGeolocating(true)
     setGeoError(null)
     setAddressLoading(true)
     navigator.geolocation.getCurrentPosition(
       async (position) => {
         const { latitude, longitude } = position.coords
-        const nearest = findNearestStop(candidateStops, latitude, longitude)
-        setOrigin(nearest.stop)
-        setClosestStop(nearest)
         setAddressOptions([])
         setAddressSelection(null)
         setAddressResult(null)
@@ -1055,7 +1059,7 @@ function App() {
 
         <Container sx={{ py: { xs: 4, md: 8 } }}>
           <Grid container spacing={4} alignItems="center">
-            <Grid item xs={12} md={6}>
+            <Grid item xs={12} md={12}>
               <Stack spacing={3}>
                 <Chip label="Live beta" color="secondary" sx={{ width: 'fit-content' }} />
                 <Typography variant="h3" sx={{ fontWeight: 700 }}>
@@ -1064,34 +1068,7 @@ function App() {
                 <Typography variant="body1" color="text.secondary">
                   Find the next bus, track the closest stop, and board with confidence.
                 </Typography>
-                <Stack direction="row" spacing={2}>
-                  <Button variant="contained">Find my route</Button>
-                  <Button variant="outlined">View schedules</Button>
-                </Stack>
               </Stack>
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <Card className="hero-card">
-                <CardContent>
-                  <Typography variant="overline" color="text.secondary">
-                    Today
-                  </Typography>
-                  <Typography variant="h5" sx={{ fontWeight: 700, mt: 1 }}>
-                    Downtown loop running every 12 minutes
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                    Track stop 14: Main & River to catch the next inbound bus.
-                  </Typography>
-                  <Stack direction="row" spacing={1.5} sx={{ mt: 3 }}>
-                    <Button size="small" variant="contained">
-                      Track stop
-                    </Button>
-                    <Button size="small" variant="text">
-                      See alerts
-                    </Button>
-                  </Stack>
-                </CardContent>
-              </Card>
             </Grid>
           </Grid>
 
@@ -1138,6 +1115,7 @@ function App() {
                             setAddressSelection(null)
                             setAddressClosestStop(null)
                             setAddressResult(null)
+                            setOrigin(null)
                             setAddressLoading(false)
                             return
                           }
@@ -1159,7 +1137,7 @@ function App() {
                             {...params}
                             label="Enter your address"
                             placeholder="Start with your street address"
-                            helperText="We will suggest your closest stop and set it as your start."
+                            helperText="We will pick the closest stop on a route once both addresses are set."
                           />
                         )}
                       />
@@ -1184,35 +1162,11 @@ function App() {
                     </Grid>
                     <Grid item xs={12} md={3}>
                       <Alert severity="info">
-                        Address search uses OpenStreetMap Nominatim results and sets the closest
-                        stop automatically.
+                        Address search uses OpenStreetMap. Closest in-route stops appear after both
+                        addresses are set.
                       </Alert>
                     </Grid>
                   </Grid>
-
-                  {addressClosestStop && addressResult && (
-                    <Alert
-                      severity="success"
-                      action={
-                        directionsUrl ? (
-                          <Button
-                            size="small"
-                            color="secondary"
-                            variant="outlined"
-                            startIcon={<DirectionsWalk />}
-                            href={directionsUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Walking directions
-                          </Button>
-                        ) : null
-                      }
-                    >
-                      Closest stop to {addressResult.address}: {addressClosestStop.stop.stop_name}{' '}
-                      ({addressClosestStop.distanceKm.toFixed(2)} km away). Start stop set.
-                    </Alert>
-                  )}
 
                   <Grid container spacing={2} alignItems="center">
                     <Grid item xs={12} md={9}>
@@ -1229,10 +1183,11 @@ function App() {
                           if (reason === 'clear') {
                             setDestinationOptions([])
                             setDestinationSelection(null)
-                            setDestinationClosestStop(null)
                             setDestinationResult(null)
                             setDestination(null)
                             setDestinationLoading(false)
+                            setOrigin(null)
+                            setAddressClosestStop(null)
                             return
                           }
                           setDestinationLoading(true)
@@ -1254,29 +1209,14 @@ function App() {
                             {...params}
                             label="Destination address"
                             placeholder="Where are you headed?"
-                            helperText="We will select the closest stop for your destination."
+                            helperText="We will select the closest stop to your destination."
                           />
                         )}
                       />
                     </Grid>
                   </Grid>
 
-                  {destinationClosestStop && destinationResult && (
-                    <Alert severity="success">
-                      Closest stop to {destinationResult.address}:{' '}
-                      {destinationClosestStop.stop.stop_name} (
-                      {destinationClosestStop.distanceKm.toFixed(2)} km away). Destination stop set.
-                    </Alert>
-                  )}
-
                   {geoError && <Alert severity="warning">{geoError}</Alert>}
-
-                  {closestStop && (
-                    <Alert severity="info">
-                      Closest stop: {closestStop.stop.stop_name} (
-                      {closestStop.distanceKm.toFixed(2)} km away)
-                    </Alert>
-                  )}
 
                   <Divider />
 
@@ -1284,9 +1224,36 @@ function App() {
                     <Alert severity="info">
                       Enter both a start and destination address to see boarding times.
                     </Alert>
-                  ) : planResult?.kind === 'error' ? (
+                  ) : null}
+
+                  {origin && destination && addressClosestStop && addressResult ? (
+                    <Alert
+                      severity="success"
+                      action={
+                        directionsUrl ? (
+                          <Button
+                            size="small"
+                            color="secondary"
+                            variant="outlined"
+                            startIcon={<DirectionsWalk />}
+                            href={directionsUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Walking directions
+                          </Button>
+                        ) : null
+                      }
+                    >
+                      Closest stop on a route to {destinationResult?.address ?? 'your destination'}
+                      : {addressClosestStop.stop.stop_name} (
+                      {addressClosestStop.distanceKm.toFixed(2)} km away).
+                    </Alert>
+                  ) : null}
+
+                  {origin && destination && planResult?.kind === 'error' ? (
                     <Alert severity="warning">{planResult.error}</Alert>
-                  ) : planResult?.kind === 'direct' ? (
+                  ) : origin && destination && planResult?.kind === 'direct' ? (
                     <Grid container spacing={2}>
                       {planResult.serviceNote ? (
                         <Grid item xs={12}>
@@ -1365,7 +1332,7 @@ function App() {
                         </Card>
                       </Grid>
                     </Grid>
-                  ) : planResult?.kind === 'transfer' ? (
+                  ) : origin && destination && planResult?.kind === 'transfer' ? (
                     <Grid container spacing={2}>
                       {planResult.serviceNote ? (
                         <Grid item xs={12}>
@@ -1498,33 +1465,6 @@ function App() {
               </Paper>
             </Grid>
 
-            {[
-              {
-                title: 'Smart stops',
-                detail: 'Realtime arrivals with crowdsourced feedback.',
-              },
-              {
-                title: 'Flexible planning',
-                detail: 'Save frequent trips and compare route options.',
-              },
-              {
-                title: 'Community powered',
-                detail: 'Share service updates with riders nearby.',
-              },
-            ].map((item) => (
-              <Grid item xs={12} md={4} key={item.title}>
-                <Card className="info-card">
-                  <CardContent>
-                    <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                      {item.title}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                      {item.detail}
-                    </Typography>
-                  </CardContent>
-                </Card>
-              </Grid>
-            ))}
           </Grid>
         </Container>
       </Box>
