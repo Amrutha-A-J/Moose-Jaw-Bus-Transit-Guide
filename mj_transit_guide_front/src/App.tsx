@@ -99,16 +99,47 @@ type AddressResult = {
   location: { lat: number; lng: number }
 }
 
+type NominatimAddress = {
+  house_number?: string
+  road?: string
+  pedestrian?: string
+  footway?: string
+  cycleway?: string
+  highway?: string
+  neighbourhood?: string
+  suburb?: string
+  city?: string
+  town?: string
+  village?: string
+  municipality?: string
+  hamlet?: string
+  state?: string
+  province?: string
+  region?: string
+  postcode?: string
+}
+
 type NominatimResult = {
   place_id: number
   display_name: string
   lat: string
   lon: string
+  class?: string
+  type?: string
+  address?: NominatimAddress
 }
 
 type NominatimReverseResult = {
   place_id: number
   display_name: string
+  address?: NominatimAddress
+}
+
+type Bounds = {
+  minLat: number
+  maxLat: number
+  minLon: number
+  maxLon: number
 }
 
 type GeocoderResult = {
@@ -126,6 +157,10 @@ const nominatimBaseUrl = 'https://nominatim.openstreetmap.org/search'
 const nominatimLookupUrl = 'https://nominatim.openstreetmap.org/lookup'
 const nominatimReverseUrl = 'https://nominatim.openstreetmap.org/reverse'
 const geocoderBaseUrl = 'https://geocoder.ca/'
+const mooseJawName = 'moose jaw'
+const mooseJawProvince = 'saskatchewan'
+const mooseJawProvinceAbbr = 'sk'
+const serviceAreaPadding = 0.05
 
 const parseCsv = (raw: string) => {
   const [headerLine, ...lines] = raw.trim().split(/\r?\n/)
@@ -162,8 +197,124 @@ const getNowMinutes = () => {
   return hours * 60 + minutes
 }
 
-const formatTime = (value: string) => value.slice(0, 5)
+const formatTime = (value: string) => {
+  const [rawHours, rawMinutes] = value.split(':')
+  const hoursTotal = Number(rawHours)
+  const minutes = Number(rawMinutes)
+  if (!Number.isFinite(hoursTotal) || !Number.isFinite(minutes)) {
+    return value
+  }
+  const hours24 = ((hoursTotal % 24) + 24) % 24
+  const period = hours24 >= 12 ? 'PM' : 'AM'
+  const hours12 = hours24 % 12 || 12
+  return `${hours12}:${String(minutes).padStart(2, '0')} ${period}`
+}
 const minutesBetween = (start: string, end: string) => timeToMinutes(end) - timeToMinutes(start)
+
+const buildNominatimLabel = (result: NominatimResult) => {
+  const address = result.address
+  if (!address) return result.display_name
+  const road =
+    address.road ??
+    address.pedestrian ??
+    address.footway ??
+    address.cycleway ??
+    address.highway
+  const houseNumber = address.house_number?.trim()
+  const primary = houseNumber && road ? `${houseNumber} ${road}` : road ?? result.display_name
+  const locality =
+    address.city ??
+    address.town ??
+    address.village ??
+    address.municipality ??
+    address.hamlet
+  const region = address.state ?? address.province ?? address.region
+  const parts = [primary]
+  if (address.neighbourhood) {
+    parts.push(address.neighbourhood)
+  } else if (address.suburb) {
+    parts.push(address.suburb)
+  }
+  if (locality) parts.push(locality)
+  if (region) parts.push(region)
+  if (address.postcode) parts.push(address.postcode)
+  return parts.join(', ')
+}
+
+const scoreNominatimResult = (result: NominatimResult) => {
+  const hasHouseNumber = Boolean(result.address?.house_number?.trim())
+  const isHouseType = result.type === 'house' || result.type === 'building'
+  return (hasHouseNumber ? 2 : 0) + (isHouseType ? 1 : 0)
+}
+
+const normalize = (value?: string) => value?.trim().toLowerCase() ?? ''
+
+const getNominatimLocality = (address?: NominatimAddress) =>
+  address?.city ??
+  address?.town ??
+  address?.village ??
+  address?.municipality ??
+  address?.hamlet
+
+const isMooseJawLocality = (value?: string) => normalize(value) === mooseJawName
+
+const isMooseJawProvince = (value?: string) => {
+  const normalized = normalize(value)
+  return normalized === mooseJawProvince || normalized === mooseJawProvinceAbbr
+}
+
+const isMooseJawNominatimResult = (result: NominatimResult) => {
+  const locality = getNominatimLocality(result.address)
+  if (isMooseJawLocality(locality)) return true
+  if (result.address?.state && !isMooseJawProvince(result.address.state)) return false
+  return normalize(result.display_name).includes(mooseJawName)
+}
+
+const isMooseJawGeocoderResult = (result: GeocoderResult) => {
+  const city = normalize(result.standard?.city)
+  if (!city) return false
+  if (city !== mooseJawName) return false
+  const province = normalize(result.standard?.prov)
+  if (!province) return true
+  return province === mooseJawProvince || province === mooseJawProvinceAbbr
+}
+
+const isWithinBounds = (lat: number, lon: number, bounds: Bounds | null) => {
+  if (!bounds) return true
+  return (
+    lat >= bounds.minLat &&
+    lat <= bounds.maxLat &&
+    lon >= bounds.minLon &&
+    lon <= bounds.maxLon
+  )
+}
+
+const setNominatimSearchParams = (
+  url: URL,
+  query: string,
+  isHouseNumberQuery: boolean,
+  limit: number,
+  preferAddressOnly: boolean,
+  bounds: Bounds | null
+) => {
+  url.searchParams.set('format', 'json')
+  url.searchParams.set('addressdetails', '1')
+  url.searchParams.set('limit', String(limit))
+  url.searchParams.set('q', query)
+  url.searchParams.set('countrycodes', 'ca')
+  url.searchParams.set('accept-language', 'en')
+  url.searchParams.set('dedupe', '0')
+  if (bounds) {
+    url.searchParams.set(
+      'viewbox',
+      `${bounds.minLon},${bounds.maxLat},${bounds.maxLon},${bounds.minLat}`
+    )
+    url.searchParams.set('bounded', '1')
+  }
+  if (isHouseNumberQuery && preferAddressOnly) {
+    url.searchParams.set('featuretype', 'address')
+  }
+}
 
 const haversineDistanceKm = (a: Stop, lat: number, lon: number) => {
   const toRad = (deg: number) => (deg * Math.PI) / 180
@@ -189,6 +340,12 @@ const findNearestStop = (stops: Stop[], lat: number, lon: number) => {
     }
   }
   return { stop: nearest, distanceKm: nearestDistance }
+}
+
+const pickNearestStop = (primary: Stop[], fallback: Stop[], lat: number, lon: number) => {
+  if (primary.length > 0) return findNearestStop(primary, lat, lon)
+  if (fallback.length > 0) return findNearestStop(fallback, lat, lon)
+  return null
 }
 
 const buildEligibleStopIds = (
@@ -252,6 +409,7 @@ function App() {
   const [addressOptions, setAddressOptions] = useState<AddressSuggestion[]>([])
   const [addressLoading, setAddressLoading] = useState(false)
   const [addressResult, setAddressResult] = useState<AddressResult | null>(null)
+  const [addressError, setAddressError] = useState<string | null>(null)
   const [addressClosestStop, setAddressClosestStop] = useState<{
     stop: Stop
     distanceKm: number
@@ -261,6 +419,7 @@ function App() {
   const [destinationOptions, setDestinationOptions] = useState<AddressSuggestion[]>([])
   const [destinationLoading, setDestinationLoading] = useState(false)
   const [destinationResult, setDestinationResult] = useState<AddressResult | null>(null)
+  const [destinationError, setDestinationError] = useState<string | null>(null)
   const [nowMinutes, setNowMinutes] = useState(getNowMinutes)
   const addressTimeout = useRef<number | null>(null)
   const addressAbort = useRef<AbortController | null>(null)
@@ -276,6 +435,26 @@ function App() {
       stop_lon: Number(row.stop_lon),
     }))
   }, [])
+
+  const serviceBounds = useMemo<Bounds | null>(() => {
+    if (stops.length === 0) return null
+    let minLat = Infinity
+    let maxLat = -Infinity
+    let minLon = Infinity
+    let maxLon = -Infinity
+    stops.forEach((stop) => {
+      if (stop.stop_lat < minLat) minLat = stop.stop_lat
+      if (stop.stop_lat > maxLat) maxLat = stop.stop_lat
+      if (stop.stop_lon < minLon) minLon = stop.stop_lon
+      if (stop.stop_lon > maxLon) maxLon = stop.stop_lon
+    })
+    return {
+      minLat: minLat - serviceAreaPadding,
+      maxLat: maxLat + serviceAreaPadding,
+      minLon: minLon - serviceAreaPadding,
+      maxLon: maxLon + serviceAreaPadding,
+    }
+  }, [stops])
 
   const routes = useMemo<Route[]>(() => {
     return parseCsv(routesRaw).map((row) => ({
@@ -348,22 +527,45 @@ function App() {
     const trimmedQuery = query.trim()
     const isHouseNumberQuery = /^\d{1,6}\s+/.test(trimmedQuery)
     const fetchNominatim = async () => {
-      const url = new URL(nominatimBaseUrl)
-      url.searchParams.set('format', 'json')
-      url.searchParams.set('addressdetails', '1')
-      url.searchParams.set('limit', '5')
-      url.searchParams.set('q', trimmedQuery)
-      url.searchParams.set('countrycodes', 'ca')
-      const response = await fetch(url.toString(), {
-        signal: controller.signal,
-        headers: { Accept: 'application/json' },
-      })
-      if (!response.ok) {
-        throw new Error('Address lookup failed.')
+      const fetchWithPreference = async (preferAddressOnly: boolean) => {
+        const url = new URL(nominatimBaseUrl)
+        setNominatimSearchParams(
+          url,
+          trimmedQuery,
+          isHouseNumberQuery,
+          10,
+          preferAddressOnly,
+          serviceBounds
+        )
+        const response = await fetch(url.toString(), {
+          signal: controller.signal,
+          headers: { Accept: 'application/json' },
+        })
+        if (!response.ok) {
+          throw new Error('Address lookup failed.')
+        }
+        return (await response.json()) as NominatimResult[]
       }
-      const results = (await response.json()) as NominatimResult[]
-      return results.map((result) => ({
-        description: result.display_name,
+
+      let combinedResults: NominatimResult[] = await fetchWithPreference(true)
+      if (isHouseNumberQuery) {
+        const broaderResults = await fetchWithPreference(false)
+        const byId = new Map<string, NominatimResult>()
+        combinedResults.forEach((result) => byId.set(String(result.place_id), result))
+        broaderResults.forEach((result) => byId.set(String(result.place_id), result))
+        combinedResults = Array.from(byId.values())
+      }
+      const orderedResults = isHouseNumberQuery
+        ? [...combinedResults].sort((a, b) => scoreNominatimResult(b) - scoreNominatimResult(a))
+        : combinedResults
+      const filteredResults = orderedResults.filter((result) => {
+        const lat = Number(result.lat)
+        const lon = Number(result.lon)
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false
+        return isMooseJawNominatimResult(result) && isWithinBounds(lat, lon, serviceBounds)
+      })
+      return filteredResults.map((result) => ({
+        description: buildNominatimLabel(result),
         place_id: String(result.place_id),
         source: 'nominatim' as const,
       }))
@@ -384,6 +586,9 @@ function App() {
       const lat = Number(result.latt)
       const lng = Number(result.longt)
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return null
+      }
+      if (!isMooseJawGeocoderResult(result) || !isWithinBounds(lat, lng, serviceBounds)) {
         return null
       }
       const standard = result.standard
@@ -450,22 +655,45 @@ function App() {
     const trimmedQuery = query.trim()
     const isHouseNumberQuery = /^\d{1,6}\s+/.test(trimmedQuery)
     const fetchNominatim = async () => {
-      const url = new URL(nominatimBaseUrl)
-      url.searchParams.set('format', 'json')
-      url.searchParams.set('addressdetails', '1')
-      url.searchParams.set('limit', '5')
-      url.searchParams.set('q', trimmedQuery)
-      url.searchParams.set('countrycodes', 'ca')
-      const response = await fetch(url.toString(), {
-        signal: controller.signal,
-        headers: { Accept: 'application/json' },
-      })
-      if (!response.ok) {
-        throw new Error('Address lookup failed.')
+      const fetchWithPreference = async (preferAddressOnly: boolean) => {
+        const url = new URL(nominatimBaseUrl)
+        setNominatimSearchParams(
+          url,
+          trimmedQuery,
+          isHouseNumberQuery,
+          10,
+          preferAddressOnly,
+          serviceBounds
+        )
+        const response = await fetch(url.toString(), {
+          signal: controller.signal,
+          headers: { Accept: 'application/json' },
+        })
+        if (!response.ok) {
+          throw new Error('Address lookup failed.')
+        }
+        return (await response.json()) as NominatimResult[]
       }
-      const results = (await response.json()) as NominatimResult[]
-      return results.map((result) => ({
-        description: result.display_name,
+
+      let combinedResults: NominatimResult[] = await fetchWithPreference(true)
+      if (isHouseNumberQuery) {
+        const broaderResults = await fetchWithPreference(false)
+        const byId = new Map<string, NominatimResult>()
+        combinedResults.forEach((result) => byId.set(String(result.place_id), result))
+        broaderResults.forEach((result) => byId.set(String(result.place_id), result))
+        combinedResults = Array.from(byId.values())
+      }
+      const orderedResults = isHouseNumberQuery
+        ? [...combinedResults].sort((a, b) => scoreNominatimResult(b) - scoreNominatimResult(a))
+        : combinedResults
+      const filteredResults = orderedResults.filter((result) => {
+        const lat = Number(result.lat)
+        const lon = Number(result.lon)
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false
+        return isMooseJawNominatimResult(result) && isWithinBounds(lat, lon, serviceBounds)
+      })
+      return filteredResults.map((result) => ({
+        description: buildNominatimLabel(result),
         place_id: String(result.place_id),
         source: 'nominatim' as const,
       }))
@@ -486,6 +714,9 @@ function App() {
       const lat = Number(result.latt)
       const lng = Number(result.longt)
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return null
+      }
+      if (!isMooseJawGeocoderResult(result) || !isWithinBounds(lat, lng, serviceBounds)) {
         return null
       }
       const standard = result.standard
@@ -538,13 +769,12 @@ function App() {
       setOrigin(null)
       return
     }
-    const candidateStops = eligibleStopsForDestination
-    if (candidateStops.length === 0) {
+    const nearest = pickNearestStop(eligibleStopsForDestination, stops, location.lat, location.lng)
+    if (!nearest) {
       setAddressClosestStop(null)
       setOrigin(null)
       return
     }
-    const nearest = findNearestStop(candidateStops, location.lat, location.lng)
     setAddressClosestStop(nearest)
     setOrigin(nearest.stop)
   }
@@ -563,6 +793,7 @@ function App() {
   const handleAddressSelect = async (_: unknown, value: AddressSuggestion | string | null) => {
     setAddressResult(null)
     setAddressClosestStop(null)
+    setAddressError(null)
     if (!value) {
       setAddressSelection(null)
       setOrigin(null)
@@ -602,6 +833,13 @@ function App() {
               city &&
               prov
             ) {
+              if (
+                !isMooseJawGeocoderResult(result) ||
+                !isWithinBounds(lat, lng, serviceBounds)
+              ) {
+                setAddressError('Only Moose Jaw addresses are supported.')
+                return
+              }
               const description = `${stnumber} ${staddress}, ${city}, ${prov}`
               setAddressSelection({
                 description,
@@ -618,23 +856,47 @@ function App() {
           }
         }
 
-        const url = new URL(nominatimBaseUrl)
-        url.searchParams.set('format', 'json')
-        url.searchParams.set('addressdetails', '1')
-        url.searchParams.set('limit', '1')
-        url.searchParams.set('q', query)
-        url.searchParams.set('countrycodes', 'ca')
-        const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } })
-        if (!response.ok) {
-          throw new Error('Address lookup failed.')
+        const fetchWithPreference = async (preferAddressOnly: boolean) => {
+          const url = new URL(nominatimBaseUrl)
+          setNominatimSearchParams(
+            url,
+            query,
+            isHouseNumberQuery,
+            1,
+            preferAddressOnly,
+            serviceBounds
+          )
+          const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } })
+          if (!response.ok) {
+            throw new Error('Address lookup failed.')
+          }
+          return (await response.json()) as NominatimResult[]
         }
-        const results = (await response.json()) as NominatimResult[]
-        const top = results[0]
+        let combinedResults: NominatimResult[] = await fetchWithPreference(true)
+        if (isHouseNumberQuery) {
+          const broaderResults = await fetchWithPreference(false)
+          const byId = new Map<string, NominatimResult>()
+          combinedResults.forEach((result) => byId.set(String(result.place_id), result))
+          broaderResults.forEach((result) => byId.set(String(result.place_id), result))
+          combinedResults = Array.from(byId.values())
+        }
+        const orderedResults = isHouseNumberQuery
+          ? [...combinedResults].sort((a, b) => scoreNominatimResult(b) - scoreNominatimResult(a))
+          : combinedResults
+        const filteredResults = orderedResults.filter((result) => {
+          const lat = Number(result.lat)
+          const lon = Number(result.lon)
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false
+          return isMooseJawNominatimResult(result) && isWithinBounds(lat, lon, serviceBounds)
+        })
+        const top = filteredResults[0]
         if (!top) {
+          setAddressError('Only Moose Jaw addresses are supported.')
           return
         }
+        const label = buildNominatimLabel(top)
         setAddressSelection({
-          description: top.display_name,
+          description: label,
           place_id: String(top.place_id),
           source: 'nominatim',
         })
@@ -642,13 +904,18 @@ function App() {
           return
         }
         const location = { lat: Number(top.lat), lng: Number(top.lon) }
-        applyAddressLocation(top.display_name, location)
+        applyAddressLocation(label, location)
       } finally {
         setAddressLoading(false)
       }
       return
     }
     if (value.source === 'geocoder' && value.location) {
+      if (!isWithinBounds(value.location.lat, value.location.lng, serviceBounds)) {
+        setAddressError('Only Moose Jaw addresses are supported.')
+        setAddressLoading(false)
+        return
+      }
       setAddressSelection(value)
       if (stops.length === 0) {
         setAddressLoading(false)
@@ -679,10 +946,19 @@ function App() {
       const results = (await response.json()) as NominatimResult[]
       const top = results[0]
       if (!top) {
+        setAddressError('Only Moose Jaw addresses are supported.')
+        return
+      }
+      if (!isMooseJawNominatimResult(top)) {
+        setAddressError('Only Moose Jaw addresses are supported.')
         return
       }
       const location = { lat: Number(top.lat), lng: Number(top.lon) }
-      applyAddressLocation(top.display_name, location)
+      if (!isWithinBounds(location.lat, location.lng, serviceBounds)) {
+        setAddressError('Only Moose Jaw addresses are supported.')
+        return
+      }
+      applyAddressLocation(buildNominatimLabel(top), location)
     } finally {
       setAddressLoading(false)
     }
@@ -693,6 +969,7 @@ function App() {
     value: AddressSuggestion | string | null
   ) => {
     setDestinationResult(null)
+    setDestinationError(null)
     if (!value) {
       setDestinationSelection(null)
       setDestination(null)
@@ -734,6 +1011,13 @@ function App() {
               city &&
               prov
             ) {
+              if (
+                !isMooseJawGeocoderResult(result) ||
+                !isWithinBounds(lat, lng, serviceBounds)
+              ) {
+                setDestinationError('Only Moose Jaw addresses are supported.')
+                return
+              }
               const description = `${stnumber} ${staddress}, ${city}, ${prov}`
               setDestinationSelection({
                 description,
@@ -747,34 +1031,63 @@ function App() {
           }
         }
 
-        const url = new URL(nominatimBaseUrl)
-        url.searchParams.set('format', 'json')
-        url.searchParams.set('addressdetails', '1')
-        url.searchParams.set('limit', '1')
-        url.searchParams.set('q', query)
-        url.searchParams.set('countrycodes', 'ca')
-        const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } })
-        if (!response.ok) {
-          throw new Error('Address lookup failed.')
+        const fetchWithPreference = async (preferAddressOnly: boolean) => {
+          const url = new URL(nominatimBaseUrl)
+          setNominatimSearchParams(
+            url,
+            query,
+            isHouseNumberQuery,
+            1,
+            preferAddressOnly,
+            serviceBounds
+          )
+          const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } })
+          if (!response.ok) {
+            throw new Error('Address lookup failed.')
+          }
+          return (await response.json()) as NominatimResult[]
         }
-        const results = (await response.json()) as NominatimResult[]
-        const top = results[0]
+        let combinedResults: NominatimResult[] = await fetchWithPreference(true)
+        if (isHouseNumberQuery) {
+          const broaderResults = await fetchWithPreference(false)
+          const byId = new Map<string, NominatimResult>()
+          combinedResults.forEach((result) => byId.set(String(result.place_id), result))
+          broaderResults.forEach((result) => byId.set(String(result.place_id), result))
+          combinedResults = Array.from(byId.values())
+        }
+        const orderedResults = isHouseNumberQuery
+          ? [...combinedResults].sort((a, b) => scoreNominatimResult(b) - scoreNominatimResult(a))
+          : combinedResults
+        const filteredResults = orderedResults.filter((result) => {
+          const lat = Number(result.lat)
+          const lon = Number(result.lon)
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false
+          return isMooseJawNominatimResult(result) && isWithinBounds(lat, lon, serviceBounds)
+        })
+        const top = filteredResults[0]
         if (!top) {
+          setDestinationError('Only Moose Jaw addresses are supported.')
           return
         }
+        const label = buildNominatimLabel(top)
         setDestinationSelection({
-          description: top.display_name,
+          description: label,
           place_id: String(top.place_id),
           source: 'nominatim',
         })
         const location = { lat: Number(top.lat), lng: Number(top.lon) }
-        applyDestinationLocation(top.display_name, location)
+        applyDestinationLocation(label, location)
       } finally {
         setDestinationLoading(false)
       }
       return
     }
     if (value.source === 'geocoder' && value.location) {
+      if (!isWithinBounds(value.location.lat, value.location.lng, serviceBounds)) {
+        setDestinationError('Only Moose Jaw addresses are supported.')
+        setDestinationLoading(false)
+        return
+      }
       setDestinationSelection(value)
       applyDestinationLocation(value.description, value.location)
       setDestinationLoading(false)
@@ -796,16 +1109,25 @@ function App() {
       const results = (await response.json()) as NominatimResult[]
       const top = results[0]
       if (!top) {
+        setDestinationError('Only Moose Jaw addresses are supported.')
+        return
+      }
+      if (!isMooseJawNominatimResult(top)) {
+        setDestinationError('Only Moose Jaw addresses are supported.')
         return
       }
       const location = { lat: Number(top.lat), lng: Number(top.lon) }
-      applyDestinationLocation(top.display_name, location)
+      if (!isWithinBounds(location.lat, location.lng, serviceBounds)) {
+        setDestinationError('Only Moose Jaw addresses are supported.')
+        return
+      }
+      applyDestinationLocation(buildNominatimLabel(top), location)
     } finally {
       setDestinationLoading(false)
     }
   }
 
-  const directionsUrl = useMemo(() => {
+  const boardDirectionsUrl = useMemo(() => {
     if (!addressResult || !addressClosestStop) return null
     const originParam = encodeURIComponent(addressResult.address)
     const destParam = `${addressClosestStop.stop.stop_lat},${addressClosestStop.stop.stop_lon}`
@@ -821,20 +1143,20 @@ function App() {
 
   useEffect(() => {
     if (!addressResult || !destination) return
-    const candidateStops = eligibleStopsForDestination
-    if (candidateStops.length === 0) {
+    const nearest = pickNearestStop(
+      eligibleStopsForDestination,
+      stops,
+      addressResult.location.lat,
+      addressResult.location.lng
+    )
+    if (!nearest) {
       setAddressClosestStop(null)
       setOrigin(null)
       return
     }
-    const nearest = findNearestStop(
-      candidateStops,
-      addressResult.location.lat,
-      addressResult.location.lng
-    )
     setAddressClosestStop(nearest)
     setOrigin(nearest.stop)
-  }, [addressResult, destination, eligibleStopsForDestination])
+  }, [addressResult, destination, eligibleStopsForDestination, stops])
 
   const planResult = useMemo(() => {
     if (!origin || !destination) return null
@@ -842,16 +1164,66 @@ function App() {
       return { kind: 'error' as const, error: 'Pick two different stops to build a route.' }
     }
 
+    const destinationLocation = destinationResult?.location ?? null
+    const pickClosestStopAfterBoard = (
+      stopTimes: StopTime[],
+      boardIndex: number,
+      boardMinutes: number
+    ) => {
+      if (!destinationLocation) return null
+      let closest: { stopTime: StopTime; stop: Stop; distanceKm: number } | null = null
+      for (let i = boardIndex + 1; i < stopTimes.length; i += 1) {
+        const stopTime = stopTimes[i]
+        if (timeToMinutes(stopTime.arrival_time) <= boardMinutes) {
+          continue
+        }
+        const stop = stopById.get(stopTime.stop_id)
+        if (!stop) continue
+        const distanceKm = haversineDistanceKm(
+          stop,
+          destinationLocation.lat,
+          destinationLocation.lng
+        )
+        if (!closest || distanceKm < closest.distanceKm) {
+          closest = { stopTime, stop, distanceKm }
+        }
+      }
+      return closest
+    }
+
     const candidates: CandidateTrip[] = []
     trips.forEach((trip) => {
       const stopTimes = stopTimesByTrip.get(trip.trip_id)
       if (!stopTimes) return
-      const boardTime = stopTimes.find((time) => time.stop_id === origin.stop_id)
-      const alightTime = stopTimes.find((time) => time.stop_id === destination.stop_id)
-      if (!boardTime || !alightTime) return
+      const boardIndex = stopTimes.findIndex((time) => time.stop_id === origin.stop_id)
+      if (boardIndex < 0) return
+      const boardTime = stopTimes[boardIndex]
+      let alightTime: StopTime | null = null
+      let alightStop: Stop | null = null
+      const destinationIndex = stopTimes.findIndex(
+        (time, index) => index > boardIndex && time.stop_id === destination.stop_id
+      )
+      if (destinationIndex >= 0) {
+        const candidate = stopTimes[destinationIndex]
+        if (timeToMinutes(candidate.arrival_time) > timeToMinutes(boardTime.departure_time)) {
+          alightTime = candidate
+          alightStop = stopById.get(candidate.stop_id) ?? null
+        }
+      }
+      if (!alightTime || !alightStop) {
+        const closest = pickClosestStopAfterBoard(
+          stopTimes,
+          boardIndex,
+          timeToMinutes(boardTime.departure_time)
+        )
+        if (closest) {
+          alightTime = closest.stopTime
+          alightStop = closest.stop
+        }
+      }
+      if (!alightTime || !alightStop) return
       if (boardTime.stop_sequence >= alightTime.stop_sequence) return
       const boardStop = stopById.get(boardTime.stop_id)
-      const alightStop = stopById.get(alightTime.stop_id)
       if (!boardStop || !alightStop) return
       candidates.push({
         trip,
@@ -976,7 +1348,46 @@ function App() {
     const [nextTransfer, ...alternatives] = upcomingTransfers
 
     return { kind: 'transfer' as const, nextTransfer, alternatives }
-  }, [destination, nowMinutes, origin, routeById, stopById, stopTimesByTrip, trips])
+  }, [
+    destination,
+    destinationResult,
+    nowMinutes,
+    origin,
+    routeById,
+    stopById,
+    stopTimesByTrip,
+    trips,
+  ])
+
+  const alightDirectionsUrl = useMemo(() => {
+    if (!destinationResult || !planResult) return null
+    const alightStop =
+      planResult.kind === 'direct'
+        ? planResult.nextTrip.alightStop
+        : planResult.kind === 'transfer'
+          ? planResult.nextTransfer.secondLeg.alightStop
+          : null
+    if (!alightStop) return null
+    const originParam = `${alightStop.stop_lat},${alightStop.stop_lon}`
+    const destParam = encodeURIComponent(destinationResult.address)
+    return `https://www.google.com/maps/dir/?api=1&origin=${originParam}&destination=${destParam}&travelmode=walking`
+  }, [destinationResult, planResult])
+
+  const alightWalkDistanceKm = useMemo(() => {
+    if (!destinationResult || !planResult) return null
+    const alightStop =
+      planResult.kind === 'direct'
+        ? planResult.nextTrip.alightStop
+        : planResult.kind === 'transfer'
+          ? planResult.nextTransfer.secondLeg.alightStop
+          : null
+    if (!alightStop) return null
+    return haversineDistanceKm(
+      alightStop,
+      destinationResult.location.lat,
+      destinationResult.location.lng
+    )
+  }, [destinationResult, planResult])
 
   const handleUseMyLocation = () => {
     if (!navigator.geolocation) {
@@ -1002,6 +1413,12 @@ function App() {
         setAddressResult(null)
         setAddressClosestStop(null)
         const location = { lat: latitude, lng: longitude }
+        if (!isWithinBounds(location.lat, location.lng, serviceBounds)) {
+          setGeoError('Your location is outside Moose Jaw transit service area.')
+          setGeolocating(false)
+          setAddressLoading(false)
+          return
+        }
         let address = 'Current location'
         try {
           const reverseUrl = new URL(nominatimReverseUrl)
@@ -1015,6 +1432,14 @@ function App() {
           })
           if (response.ok) {
             const result = (await response.json()) as NominatimReverseResult
+            if (!isMooseJawLocality(getNominatimLocality(result.address))) {
+              if (!normalize(result.display_name).includes(mooseJawName)) {
+                setGeoError('Your location is outside Moose Jaw transit service area.')
+                setGeolocating(false)
+                setAddressLoading(false)
+                return
+              }
+            }
             if (result.display_name) {
               address = result.display_name
               setAddressSelection({
@@ -1107,6 +1532,7 @@ function App() {
                           onChange={handleAddressSelect}
                         onInputChange={(_, value, reason) => {
                           setAddressInput(value)
+                          setAddressError(null)
                           if (addressTimeout.current) {
                             window.clearTimeout(addressTimeout.current)
                           }
@@ -1177,6 +1603,7 @@ function App() {
                         inputValue={destinationInput}
                         onInputChange={(_, value, reason) => {
                           setDestinationInput(value)
+                          setDestinationError(null)
                           if (destinationTimeout.current) {
                             window.clearTimeout(destinationTimeout.current)
                           }
@@ -1217,37 +1644,14 @@ function App() {
                   </Grid>
 
                   {geoError && <Alert severity="warning">{geoError}</Alert>}
+                  {addressError && <Alert severity="warning">{addressError}</Alert>}
+                  {destinationError && <Alert severity="warning">{destinationError}</Alert>}
 
                   <Divider />
 
                   {!origin || !destination ? (
                     <Alert severity="info">
                       Enter both a start and destination address to see boarding times.
-                    </Alert>
-                  ) : null}
-
-                  {origin && destination && addressClosestStop && addressResult ? (
-                    <Alert
-                      severity="success"
-                      action={
-                        directionsUrl ? (
-                          <Button
-                            size="small"
-                            color="secondary"
-                            variant="outlined"
-                            startIcon={<DirectionsWalk />}
-                            href={directionsUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Walking directions
-                          </Button>
-                        ) : null
-                      }
-                    >
-                      Closest stop on a route to {destinationResult?.address ?? 'your destination'}
-                      : {addressClosestStop.stop.stop_name} (
-                      {addressClosestStop.distanceKm.toFixed(2)} km away).
                     </Alert>
                   ) : null}
 
@@ -1283,6 +1687,19 @@ function App() {
                                 <Typography variant="body1" sx={{ fontWeight: 600 }}>
                                   Board at {planResult.nextTrip.boardStop.stop_name}
                                 </Typography>
+                                {boardDirectionsUrl ? (
+                                  <Button
+                                    size="small"
+                                    variant="outlined"
+                                    color="secondary"
+                                    startIcon={<DirectionsWalk />}
+                                    href={boardDirectionsUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    Walk to stop
+                                  </Button>
+                                ) : null}
                               </Stack>
                               <Stack direction="row" spacing={2} alignItems="center">
                                 <AccessTime color="primary" fontSize="small" />
@@ -1297,6 +1714,27 @@ function App() {
                                   {planResult.nextTrip.alightStop.stop_name}
                                 </Typography>
                               </Stack>
+                              {alightWalkDistanceKm !== null ? (
+                                <Stack direction="row" spacing={2} alignItems="center">
+                                  <DirectionsWalk color="action" fontSize="small" />
+                                  <Typography variant="body2" color="text.secondary">
+                                    Walk about {alightWalkDistanceKm.toFixed(2)} km to destination
+                                  </Typography>
+                                </Stack>
+                              ) : null}
+                              {alightDirectionsUrl ? (
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  color="secondary"
+                                  startIcon={<DirectionsWalk />}
+                                  href={alightDirectionsUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  Walk from stop to destination
+                                </Button>
+                              ) : null}
                             </Stack>
                           </CardContent>
                         </Card>
@@ -1363,6 +1801,19 @@ function App() {
                                 <Typography variant="body1" sx={{ fontWeight: 600 }}>
                                   Board at {planResult.nextTransfer.firstLeg.boardStop.stop_name}
                                 </Typography>
+                                {boardDirectionsUrl ? (
+                                  <Button
+                                    size="small"
+                                    variant="outlined"
+                                    color="secondary"
+                                    startIcon={<DirectionsWalk />}
+                                    href={boardDirectionsUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    Walk to stop
+                                  </Button>
+                                ) : null}
                               </Stack>
                               <Stack direction="row" spacing={2} alignItems="center">
                                 <AccessTime color="primary" fontSize="small" />
@@ -1417,6 +1868,27 @@ function App() {
                                   {planResult.nextTransfer.secondLeg.alightStop.stop_name}
                                 </Typography>
                               </Stack>
+                              {alightWalkDistanceKm !== null ? (
+                                <Stack direction="row" spacing={2} alignItems="center">
+                                  <DirectionsWalk color="action" fontSize="small" />
+                                  <Typography variant="body2" color="text.secondary">
+                                    Walk about {alightWalkDistanceKm.toFixed(2)} km to destination
+                                  </Typography>
+                                </Stack>
+                              ) : null}
+                              {alightDirectionsUrl ? (
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  color="secondary"
+                                  startIcon={<DirectionsWalk />}
+                                  href={alightDirectionsUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  Walk from stop to destination
+                                </Button>
+                              ) : null}
                               <Stack direction="row" spacing={2} alignItems="center">
                                 <AccessTime color="action" fontSize="small" />
                                 <Typography variant="body2" color="text.secondary">
