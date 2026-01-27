@@ -9,8 +9,8 @@ The route planner uses OpenStreetMap Nominatim to look up addresses and find the
 ## GitHub Pages deployment
 
 1) Update `package.json` with your repo info:
-- `homepage`: `https://<username>.github.io/<repo>/`
-- `deploy` script: replace `<repo>` in `VITE_BASE_PATH=/<repo>/`
+- `homepage`: `https://amruthaaj.com/Moose-Jaw-Bus-Transit-Guide/`
+- `deploy` script: `VITE_BASE_PATH=/Moose-Jaw-Bus-Transit-Guide/`
 
 2) Deploy:
 ```

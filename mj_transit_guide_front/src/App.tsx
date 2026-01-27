@@ -1514,13 +1514,37 @@ function App() {
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <Box className="app-shell">
-        <AppBar position="sticky" color="transparent" elevation={0}>
-          <Toolbar sx={{ gap: 2 }}>
-            <Box className="logo-mark" />
-            <Typography variant="h6" sx={{ flexGrow: 1, fontWeight: 700 }}>
+        <AppBar
+          position="sticky"
+          color="transparent"
+          elevation={0}
+          sx={{
+            backgroundColor: 'rgba(246, 243, 239, 0.92)',
+            backdropFilter: 'blur(10px)',
+            borderBottom: '1px solid rgba(31, 78, 95, 0.08)',
+            zIndex: (theme) => theme.zIndex.appBar,
+          }}
+        >
+          <Toolbar sx={{ gap: 2, flexWrap: 'wrap', py: { xs: 1, sm: 0 } }}>
+            <Box
+              className="logo-mark"
+              sx={{ width: { xs: 32, sm: 40 }, height: { xs: 32, sm: 40 } }}
+            />
+            <Typography
+              variant="h6"
+              sx={{
+                flexGrow: 1,
+                fontWeight: 700,
+                width: { xs: '100%', sm: 'auto' },
+              }}
+            >
               Moose Jaw Transit Guide
             </Typography>
-            <Button variant="outlined" color="secondary">
+            <Button
+              variant="outlined"
+              color="secondary"
+              sx={{ width: { xs: '100%', sm: 'auto' } }}
+            >
               Service Alerts
             </Button>
           </Toolbar>
@@ -1531,7 +1555,13 @@ function App() {
             <Grid item xs={12} md={12}>
               <Stack spacing={3}>
                 <Chip label="Live beta" color="secondary" sx={{ width: 'fit-content' }} />
-                <Typography variant="h3" sx={{ fontWeight: 700 }}>
+                <Typography
+                  variant="h3"
+                  sx={{
+                    fontWeight: 700,
+                    fontSize: { xs: '2.1rem', sm: '2.6rem', md: '3.2rem' },
+                  }}
+                >
                   Plan faster rides across Moose Jaw.
                 </Typography>
                 <Typography variant="body1" color="text.secondary">
@@ -1553,7 +1583,11 @@ function App() {
                 }}
               >
                 <Stack spacing={3}>
-                  <Stack direction="row" alignItems="center" spacing={1.5}>
+                  <Stack
+                    direction={{ xs: 'column', sm: 'row' }}
+                    alignItems={{ xs: 'flex-start', sm: 'center' }}
+                    spacing={1.5}
+                  >
                     <DirectionsBus color="primary" />
                     <Box>
                       <Typography variant="h5" sx={{ fontWeight: 700 }}>
@@ -1631,10 +1665,10 @@ function App() {
                       </Button>
                     </Grid>
                     <Grid item xs={12} md={3}>
-                      <Alert severity="info">
+                      <Typography variant="body2" color="text.secondary">
                         Address search uses OpenStreetMap. Closest in-route stops appear after both
                         addresses are set.
-                      </Alert>
+                      </Typography>
                     </Grid>
                   </Grid>
 
@@ -1706,9 +1740,9 @@ function App() {
                   <Divider />
 
                   {!origin || !destination ? (
-                    <Alert severity="info">
+                    <Typography variant="body2" color="text.secondary">
                       Enter both a start and destination address to see boarding times.
-                    </Alert>
+                    </Typography>
                   ) : null}
 
                   {origin && destination && planResult?.kind === 'error' ? (
@@ -1717,14 +1751,20 @@ function App() {
                     <Grid container spacing={2}>
                       {planResult.serviceNote ? (
                         <Grid item xs={12}>
-                          <Alert severity="info">{planResult.serviceNote}</Alert>
+                          <Typography variant="body2" color="text.secondary">
+                            {planResult.serviceNote}
+                          </Typography>
                         </Grid>
                       ) : null}
                       <Grid item xs={12} md={7}>
                         <Card variant="outlined" sx={{ borderRadius: 3 }}>
                           <CardContent>
                             <Stack spacing={2}>
-                              <Stack direction="row" alignItems="center" spacing={1}>
+                              <Stack
+                                direction={{ xs: 'column', sm: 'row' }}
+                                alignItems={{ xs: 'flex-start', sm: 'center' }}
+                                spacing={1}
+                              >
                                 <Chip
                                   label={`Route ${
                                     planResult.nextTrip.route?.route_short_name ?? 'Local'
@@ -1738,7 +1778,11 @@ function App() {
                               <Typography variant="body2" color="text.secondary">
                                 Headed toward {planResult.nextTrip.trip.trip_headsign}
                               </Typography>
-                              <Stack direction="row" spacing={2} alignItems="center">
+                              <Stack
+                                direction={{ xs: 'column', sm: 'row' }}
+                                spacing={2}
+                                alignItems={{ xs: 'flex-start', sm: 'center' }}
+                              >
                                 <Place color="primary" fontSize="small" />
                                 <Typography variant="body1" sx={{ fontWeight: 600 }}>
                                   Board at {planResult.nextTrip.boardStop.stop_name}
@@ -1757,13 +1801,21 @@ function App() {
                                   </Button>
                                 ) : null}
                               </Stack>
-                              <Stack direction="row" spacing={2} alignItems="center">
+                              <Stack
+                                direction={{ xs: 'column', sm: 'row' }}
+                                spacing={2}
+                                alignItems={{ xs: 'flex-start', sm: 'center' }}
+                              >
                                 <AccessTime color="primary" fontSize="small" />
                                 <Typography variant="body1" sx={{ fontWeight: 600 }}>
                                   Board at {formatTime(planResult.nextTrip.boardTime)}
                                 </Typography>
                               </Stack>
-                              <Stack direction="row" spacing={2} alignItems="center">
+                              <Stack
+                                direction={{ xs: 'column', sm: 'row' }}
+                                spacing={2}
+                                alignItems={{ xs: 'flex-start', sm: 'center' }}
+                              >
                                 <ArrowForward color="action" fontSize="small" />
                                 <Typography variant="body2" color="text.secondary">
                                   Arrive by {formatTime(planResult.nextTrip.alightTime)} at{' '}
@@ -1771,7 +1823,11 @@ function App() {
                                 </Typography>
                               </Stack>
                               {alightWalkDistanceKm !== null ? (
-                                <Stack direction="row" spacing={2} alignItems="center">
+                                <Stack
+                                  direction={{ xs: 'column', sm: 'row' }}
+                                  spacing={2}
+                                  alignItems={{ xs: 'flex-start', sm: 'center' }}
+                                >
                                   <DirectionsWalk color="action" fontSize="small" />
                                   <Typography variant="body2" color="text.secondary">
                                     Walk about {alightWalkDistanceKm.toFixed(2)} km to destination
@@ -1830,14 +1886,20 @@ function App() {
                     <Grid container spacing={2}>
                       {planResult.serviceNote ? (
                         <Grid item xs={12}>
-                          <Alert severity="info">{planResult.serviceNote}</Alert>
+                          <Typography variant="body2" color="text.secondary">
+                            {planResult.serviceNote}
+                          </Typography>
                         </Grid>
                       ) : null}
                       <Grid item xs={12} md={7}>
                         <Card variant="outlined" sx={{ borderRadius: 3 }}>
                           <CardContent>
                             <Stack spacing={2.5}>
-                              <Stack direction="row" alignItems="center" spacing={1}>
+                              <Stack
+                                direction={{ xs: 'column', sm: 'row' }}
+                                alignItems={{ xs: 'flex-start', sm: 'center' }}
+                                spacing={1}
+                              >
                                 <Chip
                                   label={`Route ${
                                     planResult.nextTransfer.firstLeg.route?.route_short_name ??
@@ -1852,7 +1914,11 @@ function App() {
                               <Typography variant="body2" color="text.secondary">
                                 Headed toward {planResult.nextTransfer.firstLeg.trip.trip_headsign}
                               </Typography>
-                              <Stack direction="row" spacing={2} alignItems="center">
+                              <Stack
+                                direction={{ xs: 'column', sm: 'row' }}
+                                spacing={2}
+                                alignItems={{ xs: 'flex-start', sm: 'center' }}
+                              >
                                 <Place color="primary" fontSize="small" />
                                 <Typography variant="body1" sx={{ fontWeight: 600 }}>
                                   Board at {planResult.nextTransfer.firstLeg.boardStop.stop_name}
@@ -1871,13 +1937,21 @@ function App() {
                                   </Button>
                                 ) : null}
                               </Stack>
-                              <Stack direction="row" spacing={2} alignItems="center">
+                              <Stack
+                                direction={{ xs: 'column', sm: 'row' }}
+                                spacing={2}
+                                alignItems={{ xs: 'flex-start', sm: 'center' }}
+                              >
                                 <AccessTime color="primary" fontSize="small" />
                                 <Typography variant="body1" sx={{ fontWeight: 600 }}>
                                   Board at {formatTime(planResult.nextTransfer.firstLeg.boardTime)}
                                 </Typography>
                               </Stack>
-                              <Stack direction="row" spacing={2} alignItems="center">
+                              <Stack
+                                direction={{ xs: 'column', sm: 'row' }}
+                                spacing={2}
+                                alignItems={{ xs: 'flex-start', sm: 'center' }}
+                              >
                                 <ArrowForward color="action" fontSize="small" />
                                 <Typography variant="body2" color="text.secondary">
                                   Arrive by{' '}
@@ -1888,7 +1962,11 @@ function App() {
 
                               <Divider />
 
-                              <Stack direction="row" alignItems="center" spacing={1}>
+                              <Stack
+                                direction={{ xs: 'column', sm: 'row' }}
+                                alignItems={{ xs: 'flex-start', sm: 'center' }}
+                                spacing={1}
+                              >
                                 <Chip
                                   label={`Route ${
                                     planResult.nextTransfer.secondLeg.route?.route_short_name ??
@@ -1904,19 +1982,31 @@ function App() {
                               <Typography variant="body2" color="text.secondary">
                                 Headed toward {planResult.nextTransfer.secondLeg.trip.trip_headsign}
                               </Typography>
-                              <Stack direction="row" spacing={2} alignItems="center">
+                              <Stack
+                                direction={{ xs: 'column', sm: 'row' }}
+                                spacing={2}
+                                alignItems={{ xs: 'flex-start', sm: 'center' }}
+                              >
                                 <Place color="primary" fontSize="small" />
                                 <Typography variant="body1" sx={{ fontWeight: 600 }}>
                                   Board at {planResult.nextTransfer.secondLeg.boardStop.stop_name}
                                 </Typography>
                               </Stack>
-                              <Stack direction="row" spacing={2} alignItems="center">
+                              <Stack
+                                direction={{ xs: 'column', sm: 'row' }}
+                                spacing={2}
+                                alignItems={{ xs: 'flex-start', sm: 'center' }}
+                              >
                                 <AccessTime color="primary" fontSize="small" />
                                 <Typography variant="body1" sx={{ fontWeight: 600 }}>
                                   Board at {formatTime(planResult.nextTransfer.secondLeg.boardTime)}
                                 </Typography>
                               </Stack>
-                              <Stack direction="row" spacing={2} alignItems="center">
+                              <Stack
+                                direction={{ xs: 'column', sm: 'row' }}
+                                spacing={2}
+                                alignItems={{ xs: 'flex-start', sm: 'center' }}
+                              >
                                 <ArrowForward color="action" fontSize="small" />
                                 <Typography variant="body2" color="text.secondary">
                                   Arrive by{' '}
@@ -1925,7 +2015,11 @@ function App() {
                                 </Typography>
                               </Stack>
                               {alightWalkDistanceKm !== null ? (
-                                <Stack direction="row" spacing={2} alignItems="center">
+                                <Stack
+                                  direction={{ xs: 'column', sm: 'row' }}
+                                  spacing={2}
+                                  alignItems={{ xs: 'flex-start', sm: 'center' }}
+                                >
                                   <DirectionsWalk color="action" fontSize="small" />
                                   <Typography variant="body2" color="text.secondary">
                                     Walk about {alightWalkDistanceKm.toFixed(2)} km to destination
@@ -1945,7 +2039,11 @@ function App() {
                                   Walk from stop to destination
                                 </Button>
                               ) : null}
-                              <Stack direction="row" spacing={2} alignItems="center">
+                              <Stack
+                                direction={{ xs: 'column', sm: 'row' }}
+                                spacing={2}
+                                alignItems={{ xs: 'flex-start', sm: 'center' }}
+                              >
                                 <AccessTime color="action" fontSize="small" />
                                 <Typography variant="body2" color="text.secondary">
                                   Layover: {Math.round(planResult.nextTransfer.layoverMinutes)} min
