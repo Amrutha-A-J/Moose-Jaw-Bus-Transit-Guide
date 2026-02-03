@@ -290,46 +290,6 @@ const findNearestStop = (stops: Stop[], lat: number, lon: number) => {
   return { stop: nearest, distanceKm: nearestDistance }
 }
 
-const pickNearestStop = (primary: Stop[], fallback: Stop[], lat: number, lon: number) => {
-  if (primary.length > 0) return findNearestStop(primary, lat, lon)
-  if (fallback.length > 0) return findNearestStop(fallback, lat, lon)
-  return null
-}
-
-const buildEligibleStopIds = (
-  destination: Stop,
-  trips: Trip[],
-  stopTimesByTrip: Map<string, StopTime[]>
-) => {
-  const directReachable = new Set<string>()
-  trips.forEach((trip) => {
-    const stopTimes = stopTimesByTrip.get(trip.trip_id)
-    if (!stopTimes) return
-    const destIndex = stopTimes.findIndex((time) => time.stop_id === destination.stop_id)
-    if (destIndex <= 0) return
-    for (let i = 0; i < destIndex; i += 1) {
-      directReachable.add(stopTimes[i].stop_id)
-    }
-  })
-
-  const transferReachable = new Set<string>()
-  if (directReachable.size > 0) {
-    trips.forEach((trip) => {
-      const stopTimes = stopTimesByTrip.get(trip.trip_id)
-      if (!stopTimes) return
-      for (let i = 0; i < stopTimes.length; i += 1) {
-        const stopId = stopTimes[i].stop_id
-        if (!directReachable.has(stopId)) continue
-        for (let j = 0; j < i; j += 1) {
-          transferReachable.add(stopTimes[j].stop_id)
-        }
-      }
-    })
-  }
-
-  return new Set([...directReachable, ...transferReachable])
-}
-
 const theme = createTheme({
   typography: {
     fontFamily: '"Space Grotesk", "Segoe UI", sans-serif',
@@ -446,13 +406,6 @@ function App() {
   const routeById = useMemo(() => {
     return new Map(routes.map((route) => [route.route_id, route]))
   }, [routes])
-
-  const eligibleStopsForDestination = useMemo(() => {
-    if (!destination) return stops
-    const eligibleStopIds = buildEligibleStopIds(destination, trips, stopTimesByTrip)
-    if (eligibleStopIds.size === 0) return []
-    return stops.filter((stop) => eligibleStopIds.has(stop.stop_id))
-  }, [destination, stops, stopTimesByTrip, trips])
 
   const ensureGoogleMaps = useCallback(async () => {
     if (!googleMapsApiKey) {
@@ -600,12 +553,7 @@ function App() {
       setOrigin(null)
       return
     }
-    const nearest = pickNearestStop(eligibleStopsForDestination, stops, location.lat, location.lng)
-    if (!nearest) {
-      setAddressClosestStop(null)
-      setOrigin(null)
-      return
-    }
+    const nearest = findNearestStop(stops, location.lat, location.lng)
     setAddressClosestStop(nearest)
     setOrigin(nearest.stop)
   }
@@ -728,20 +676,14 @@ function App() {
 
   useEffect(() => {
     if (!addressResult || !destination) return
-    const nearest = pickNearestStop(
-      eligibleStopsForDestination,
+    const nearest = findNearestStop(
       stops,
       addressResult.location.lat,
       addressResult.location.lng
     )
-    if (!nearest) {
-      setAddressClosestStop(null)
-      setOrigin(null)
-      return
-    }
     setAddressClosestStop(nearest)
     setOrigin(nearest.stop)
-  }, [addressResult, destination, eligibleStopsForDestination, stops])
+  }, [addressResult, destination, stops])
 
   const planResult = useMemo(() => {
     if (!origin || !destination) return null
