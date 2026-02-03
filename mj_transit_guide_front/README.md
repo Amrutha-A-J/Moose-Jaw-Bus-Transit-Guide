@@ -2,9 +2,16 @@
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
-## OpenStreetMap setup
+## Google Maps setup
 
-The route planner uses OpenStreetMap Nominatim to look up addresses and find the nearest stop.
+The route planner uses Google Maps Places + Geocoding for address search.
+
+Set the API key in an `.env` file:
+```
+VITE_GOOGLE_MAPS_API_KEY=YOUR_KEY_HERE
+```
+
+Enable the `Places API` and `Geocoding API` for the key in Google Cloud.
 
 ## GitHub Pages deployment
 

@@ -1,5 +1,5 @@
 ﻿import './App.css'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AppBar,
   Box,
@@ -91,49 +91,12 @@ type TransferPlan = {
 type AddressSuggestion = {
   description: string
   place_id: string
-  source: 'nominatim' | 'geocoder'
-  location?: { lat: number; lng: number }
+  source: 'google'
 }
 
 type AddressResult = {
   address: string
   location: { lat: number; lng: number }
-}
-
-type NominatimAddress = {
-  house_number?: string
-  road?: string
-  pedestrian?: string
-  footway?: string
-  cycleway?: string
-  highway?: string
-  neighbourhood?: string
-  suburb?: string
-  city?: string
-  town?: string
-  village?: string
-  municipality?: string
-  hamlet?: string
-  state?: string
-  province?: string
-  region?: string
-  postcode?: string
-}
-
-type NominatimResult = {
-  place_id: number
-  display_name: string
-  lat: string
-  lon: string
-  class?: string
-  type?: string
-  address?: NominatimAddress
-}
-
-type NominatimReverseResult = {
-  place_id: number
-  display_name: string
-  address?: NominatimAddress
 }
 
 type Bounds = {
@@ -143,25 +106,21 @@ type Bounds = {
   maxLon: number
 }
 
-type GeocoderResult = {
-  latt?: string
-  longt?: string
-  standard?: {
-    staddress?: string
-    stnumber?: string
-    city?: string
-    prov?: string
-  }
+type GoogleGeocoderResult = {
+  formatted_address?: string
+  place_id?: string
+  address_components?: Array<{ long_name: string; short_name: string; types: string[] }>
+  geometry?: { location?: { lat: () => number; lng: () => number } }
 }
 
-const nominatimBaseUrl = 'https://nominatim.openstreetmap.org/search'
-const nominatimLookupUrl = 'https://nominatim.openstreetmap.org/lookup'
-const nominatimReverseUrl = 'https://nominatim.openstreetmap.org/reverse'
-const geocoderBaseUrl = 'https://geocoder.ca/'
+const googleMapsScriptId = 'google-maps-js'
+const googleMapsLibraries = 'places'
+const googleMapsVersion = 'weekly'
 const mooseJawName = 'moose jaw'
 const mooseJawProvince = 'saskatchewan'
 const mooseJawProvinceAbbr = 'sk'
 const serviceAreaPadding = 0.05
+const googleMapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined
 
 const parseCsv = (raw: string) => {
   const [headerLine, ...lines] = raw.trim().split(/\r?\n/)
@@ -212,72 +171,13 @@ const formatTime = (value: string) => {
 }
 const minutesBetween = (start: string, end: string) => timeToMinutes(end) - timeToMinutes(start)
 
-const buildNominatimLabel = (result: NominatimResult) => {
-  const address = result.address
-  if (!address) return result.display_name
-  const road =
-    address.road ??
-    address.pedestrian ??
-    address.footway ??
-    address.cycleway ??
-    address.highway
-  const houseNumber = address.house_number?.trim()
-  const primary = houseNumber && road ? `${houseNumber} ${road}` : road ?? result.display_name
-  const locality =
-    address.city ??
-    address.town ??
-    address.village ??
-    address.municipality ??
-    address.hamlet
-  const region = address.state ?? address.province ?? address.region
-  const parts = [primary]
-  if (address.neighbourhood) {
-    parts.push(address.neighbourhood)
-  } else if (address.suburb) {
-    parts.push(address.suburb)
-  }
-  if (locality) parts.push(locality)
-  if (region) parts.push(region)
-  if (address.postcode) parts.push(address.postcode)
-  return parts.join(', ')
-}
-
-const scoreNominatimResult = (result: NominatimResult) => {
-  const hasHouseNumber = Boolean(result.address?.house_number?.trim())
-  const isHouseType = result.type === 'house' || result.type === 'building'
-  return (hasHouseNumber ? 2 : 0) + (isHouseType ? 1 : 0)
-}
-
 const normalize = (value?: string) => value?.trim().toLowerCase() ?? ''
-
-const getNominatimLocality = (address?: NominatimAddress) =>
-  address?.city ??
-  address?.town ??
-  address?.village ??
-  address?.municipality ??
-  address?.hamlet
 
 const isMooseJawLocality = (value?: string) => normalize(value) === mooseJawName
 
 const isMooseJawProvince = (value?: string) => {
   const normalized = normalize(value)
   return normalized === mooseJawProvince || normalized === mooseJawProvinceAbbr
-}
-
-const isMooseJawNominatimResult = (result: NominatimResult) => {
-  const locality = getNominatimLocality(result.address)
-  if (isMooseJawLocality(locality)) return true
-  if (result.address?.state && !isMooseJawProvince(result.address.state)) return false
-  return normalize(result.display_name).includes(mooseJawName)
-}
-
-const isMooseJawGeocoderResult = (result: GeocoderResult) => {
-  const city = normalize(result.standard?.city)
-  if (!city) return false
-  if (city !== mooseJawName) return false
-  const province = normalize(result.standard?.prov)
-  if (!province) return true
-  return province === mooseJawProvince || province === mooseJawProvinceAbbr
 }
 
 const isWithinBounds = (lat: number, lon: number, bounds: Bounds | null) => {
@@ -290,31 +190,78 @@ const isWithinBounds = (lat: number, lon: number, bounds: Bounds | null) => {
   )
 }
 
-const setNominatimSearchParams = (
-  url: URL,
-  query: string,
-  isHouseNumberQuery: boolean,
-  limit: number,
-  preferAddressOnly: boolean,
-  bounds: Bounds | null
-) => {
-  url.searchParams.set('format', 'json')
-  url.searchParams.set('addressdetails', '1')
-  url.searchParams.set('limit', String(limit))
-  url.searchParams.set('q', query)
-  url.searchParams.set('countrycodes', 'ca')
-  url.searchParams.set('accept-language', 'en')
-  url.searchParams.set('dedupe', '0')
-  if (bounds) {
-    url.searchParams.set(
-      'viewbox',
-      `${bounds.minLon},${bounds.maxLat},${bounds.maxLon},${bounds.minLat}`
-    )
-    url.searchParams.set('bounded', '1')
+const loadGoogleMaps = (apiKey: string) =>
+  new Promise<typeof window.google>((resolve, reject) => {
+    if (window.google?.maps?.places) {
+      resolve(window.google)
+      return
+    }
+    const existingScript = document.getElementById(googleMapsScriptId) as
+      | HTMLScriptElement
+      | null
+    if (existingScript) {
+      existingScript.addEventListener('load', () => resolve(window.google))
+      existingScript.addEventListener('error', () =>
+        reject(new Error('Failed to load Google Maps.'))
+      )
+      return
+    }
+    const script = document.createElement('script')
+    script.id = googleMapsScriptId
+    script.async = true
+    script.defer = true
+    const params = new URLSearchParams({
+      key: apiKey,
+      libraries: googleMapsLibraries,
+      v: googleMapsVersion,
+      region: 'CA',
+      language: 'en',
+    })
+    script.src = `https://maps.googleapis.com/maps/api/js?${params.toString()}`
+    script.onload = () => resolve(window.google)
+    script.onerror = () => reject(new Error('Failed to load Google Maps.'))
+    document.head.appendChild(script)
+  })
+
+const buildGoogleBounds = (bounds: Bounds | null) => {
+  if (!bounds || !window.google?.maps) return null
+  return new window.google.maps.LatLngBounds(
+    { lat: bounds.minLat, lng: bounds.minLon },
+    { lat: bounds.maxLat, lng: bounds.maxLon }
+  )
+}
+
+const getGoogleComponent = (
+  components: Array<{ long_name: string; short_name: string; types: string[] }>,
+  type: string
+) =>
+  components.find((component) => component.types.includes(type))
+
+const getGoogleLocality = (components: Array<{ long_name: string; short_name: string; types: string[] }>) => {
+  const locality = getGoogleComponent(components, 'locality')
+  if (locality) return locality.long_name
+  const postalTown = getGoogleComponent(components, 'postal_town')
+  return postalTown?.long_name
+}
+
+const isMooseJawGoogleResult = (result: GoogleGeocoderResult) => {
+  const components = result.address_components ?? []
+  const locality = getGoogleLocality(components)
+  if (isMooseJawLocality(locality)) return true
+  const admin = getGoogleComponent(components, 'administrative_area_level_1')
+  if (admin) {
+    if (!isMooseJawProvince(admin.long_name) && !isMooseJawProvince(admin.short_name)) {
+      return false
+    }
   }
-  if (isHouseNumberQuery && preferAddressOnly) {
-    url.searchParams.set('featuretype', 'address')
-  }
+  const formatted = normalize(result.formatted_address)
+  return formatted.includes(mooseJawName)
+}
+
+const getGoogleLocation = (result: GoogleGeocoderResult) => {
+  const location = result.geometry?.location
+  if (!location) return null
+  return { lat: location.lat(), lng: location.lng() }
 }
 
 const haversineDistanceKm = (a: Stop, lat: number, lon: number) => {
@@ -421,11 +368,11 @@ function App() {
   const [destinationLoading, setDestinationLoading] = useState(false)
   const [destinationResult, setDestinationResult] = useState<AddressResult | null>(null)
   const [destinationError, setDestinationError] = useState<string | null>(null)
+  const [mapsError, setMapsError] = useState<string | null>(null)
   const [nowMinutes, setNowMinutes] = useState(getNowMinutes)
   const addressTimeout = useRef<number | null>(null)
-  const addressAbort = useRef<AbortController | null>(null)
   const destinationTimeout = useRef<number | null>(null)
-  const destinationAbort = useRef<AbortController | null>(null)
+  const mapsPromise = useRef<Promise<typeof window.google> | null>(null)
 
   const stops = useMemo<Stop[]>(() => {
     return parseCsv(stopsRaw).map((row) => ({
@@ -435,7 +382,7 @@ function App() {
       stop_lat: Number(row.stop_lat),
       stop_lon: Number(row.stop_lon),
     }))
-  }, [])
+  }, [googleMapsApiKey])
 
   const serviceBounds = useMemo<Bounds | null>(() => {
     if (stops.length === 0) return null
@@ -507,6 +454,63 @@ function App() {
     return stops.filter((stop) => eligibleStopIds.has(stop.stop_id))
   }, [destination, stops, stopTimesByTrip, trips])
 
+  const ensureGoogleMaps = useCallback(async () => {
+    if (!googleMapsApiKey) {
+      const message = 'Google Maps API key is missing.'
+      setMapsError(message)
+      throw new Error(message)
+    }
+    if (!mapsPromise.current) {
+      mapsPromise.current = loadGoogleMaps(googleMapsApiKey)
+    }
+    return mapsPromise.current
+  }, [])
+
+  useEffect(() => {
+    if (!googleMapsApiKey) {
+      setMapsError('Google Maps API key is missing.')
+      return
+    }
+    ensureGoogleMaps().catch(() => {
+      setMapsError('Unable to load Google Maps. Check the API key and network.')
+    })
+  }, [ensureGoogleMaps])
+
+  const fetchPlacePredictions = async (query: string) => {
+    const googleMaps = await ensureGoogleMaps()
+    const bounds = buildGoogleBounds(serviceBounds)
+    return new Promise<AddressSuggestion[]>((resolve) => {
+      const service = new googleMaps.maps.places.AutocompleteService()
+      service.getPlacePredictions(
+        {
+          input: query,
+          componentRestrictions: { country: 'ca' },
+          types: ['address'],
+          bounds: bounds ?? undefined,
+          strictBounds: Boolean(bounds),
+        },
+        (predictions, status) => {
+          if (
+            status !== googleMaps.maps.places.PlacesServiceStatus.OK ||
+            !predictions
+          ) {
+            resolve([])
+            return
+          }
+          resolve(
+            predictions
+              .filter((prediction) => Boolean(prediction.place_id))
+              .map((prediction) => ({
+                description: prediction.description,
+                place_id: prediction.place_id as string,
+                source: 'google' as const,
+              }))
+          )
+        }
+      )
+    })
+  }
+
   const lookupAddressSuggestions = async (query: string) => {
     if (!query.trim()) {
       setAddressOptions([])
@@ -518,118 +522,13 @@ function App() {
       setAddressLoading(false)
       return
     }
-
-    if (addressAbort.current) {
-      addressAbort.current.abort()
-    }
-    const controller = new AbortController()
-    addressAbort.current = controller
-
-    const trimmedQuery = query.trim()
-    const isHouseNumberQuery = /^\d{1,6}\s+/.test(trimmedQuery)
-    const fetchNominatim = async () => {
-      const fetchWithPreference = async (preferAddressOnly: boolean) => {
-        const url = new URL(nominatimBaseUrl)
-        setNominatimSearchParams(
-          url,
-          trimmedQuery,
-          isHouseNumberQuery,
-          10,
-          preferAddressOnly,
-          serviceBounds
-        )
-        const response = await fetch(url.toString(), {
-          signal: controller.signal,
-          headers: { Accept: 'application/json' },
-        })
-        if (!response.ok) {
-          throw new Error('Address lookup failed.')
-        }
-        return (await response.json()) as NominatimResult[]
-      }
-
-      let combinedResults: NominatimResult[] = await fetchWithPreference(true)
-      if (isHouseNumberQuery) {
-        const broaderResults = await fetchWithPreference(false)
-        const byId = new Map<string, NominatimResult>()
-        combinedResults.forEach((result) => byId.set(String(result.place_id), result))
-        broaderResults.forEach((result) => byId.set(String(result.place_id), result))
-        combinedResults = Array.from(byId.values())
-      }
-      const orderedResults = isHouseNumberQuery
-        ? [...combinedResults].sort((a, b) => scoreNominatimResult(b) - scoreNominatimResult(a))
-        : combinedResults
-      const filteredResults = orderedResults.filter((result) => {
-        const lat = Number(result.lat)
-        const lon = Number(result.lon)
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false
-        return isMooseJawNominatimResult(result) && isWithinBounds(lat, lon, serviceBounds)
-      })
-      return filteredResults.map((result) => ({
-        description: buildNominatimLabel(result),
-        place_id: String(result.place_id),
-        source: 'nominatim' as const,
-      }))
-    }
-    const fetchGeocoder = async () => {
-      if (!isHouseNumberQuery) return null
-      const url = new URL(geocoderBaseUrl)
-      url.searchParams.set('locate', trimmedQuery)
-      url.searchParams.set('json', '1')
-      const response = await fetch(url.toString(), {
-        signal: controller.signal,
-        headers: { Accept: 'application/json' },
-      })
-      if (!response.ok) {
-        return null
-      }
-      const result = (await response.json()) as GeocoderResult
-      const lat = Number(result.latt)
-      const lng = Number(result.longt)
-      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-        return null
-      }
-      if (!isMooseJawGeocoderResult(result) || !isWithinBounds(lat, lng, serviceBounds)) {
-        return null
-      }
-      const standard = result.standard
-      const stnumber = standard?.stnumber?.trim()
-      const staddress = standard?.staddress?.trim()
-      const city = standard?.city?.trim()
-      const prov = standard?.prov?.trim()
-      if (!stnumber || !staddress || !city || !prov) {
-        return null
-      }
-      const description = `${stnumber} ${staddress}, ${city}, ${prov}`
-      return {
-        description,
-        place_id: `geocoder:${stnumber}-${staddress}-${city}-${prov}`,
-        source: 'geocoder' as const,
-        location: { lat, lng },
-      }
-    }
-
+    setMapsError(null)
     try {
-      const [nominatimResult, geocoderResult] = await Promise.allSettled([
-        fetchNominatim(),
-        fetchGeocoder(),
-      ])
-      const options: AddressSuggestion[] = []
-      if (geocoderResult.status === 'fulfilled' && geocoderResult.value) {
-        options.push(geocoderResult.value)
-      }
-      if (nominatimResult.status === 'fulfilled') {
-        nominatimResult.value.forEach((option) => {
-          if (!options.some((existing) => existing.description === option.description)) {
-            options.push(option)
-          }
-        })
-      }
+      const options = await fetchPlacePredictions(query.trim())
       setAddressOptions(options)
-    } catch (error) {
-      if ((error as Error).name !== 'AbortError') {
-        setAddressOptions([])
-      }
+    } catch {
+      setAddressOptions([])
+      setMapsError('Unable to load Google Maps suggestions.')
     } finally {
       setAddressLoading(false)
     }
@@ -646,121 +545,52 @@ function App() {
       setDestinationLoading(false)
       return
     }
-
-    if (destinationAbort.current) {
-      destinationAbort.current.abort()
-    }
-    const controller = new AbortController()
-    destinationAbort.current = controller
-
-    const trimmedQuery = query.trim()
-    const isHouseNumberQuery = /^\d{1,6}\s+/.test(trimmedQuery)
-    const fetchNominatim = async () => {
-      const fetchWithPreference = async (preferAddressOnly: boolean) => {
-        const url = new URL(nominatimBaseUrl)
-        setNominatimSearchParams(
-          url,
-          trimmedQuery,
-          isHouseNumberQuery,
-          10,
-          preferAddressOnly,
-          serviceBounds
-        )
-        const response = await fetch(url.toString(), {
-          signal: controller.signal,
-          headers: { Accept: 'application/json' },
-        })
-        if (!response.ok) {
-          throw new Error('Address lookup failed.')
-        }
-        return (await response.json()) as NominatimResult[]
-      }
-
-      let combinedResults: NominatimResult[] = await fetchWithPreference(true)
-      if (isHouseNumberQuery) {
-        const broaderResults = await fetchWithPreference(false)
-        const byId = new Map<string, NominatimResult>()
-        combinedResults.forEach((result) => byId.set(String(result.place_id), result))
-        broaderResults.forEach((result) => byId.set(String(result.place_id), result))
-        combinedResults = Array.from(byId.values())
-      }
-      const orderedResults = isHouseNumberQuery
-        ? [...combinedResults].sort((a, b) => scoreNominatimResult(b) - scoreNominatimResult(a))
-        : combinedResults
-      const filteredResults = orderedResults.filter((result) => {
-        const lat = Number(result.lat)
-        const lon = Number(result.lon)
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false
-        return isMooseJawNominatimResult(result) && isWithinBounds(lat, lon, serviceBounds)
-      })
-      return filteredResults.map((result) => ({
-        description: buildNominatimLabel(result),
-        place_id: String(result.place_id),
-        source: 'nominatim' as const,
-      }))
-    }
-    const fetchGeocoder = async () => {
-      if (!isHouseNumberQuery) return null
-      const url = new URL(geocoderBaseUrl)
-      url.searchParams.set('locate', trimmedQuery)
-      url.searchParams.set('json', '1')
-      const response = await fetch(url.toString(), {
-        signal: controller.signal,
-        headers: { Accept: 'application/json' },
-      })
-      if (!response.ok) {
-        return null
-      }
-      const result = (await response.json()) as GeocoderResult
-      const lat = Number(result.latt)
-      const lng = Number(result.longt)
-      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-        return null
-      }
-      if (!isMooseJawGeocoderResult(result) || !isWithinBounds(lat, lng, serviceBounds)) {
-        return null
-      }
-      const standard = result.standard
-      const stnumber = standard?.stnumber?.trim()
-      const staddress = standard?.staddress?.trim()
-      const city = standard?.city?.trim()
-      const prov = standard?.prov?.trim()
-      if (!stnumber || !staddress || !city || !prov) {
-        return null
-      }
-      const description = `${stnumber} ${staddress}, ${city}, ${prov}`
-      return {
-        description,
-        place_id: `geocoder:${stnumber}-${staddress}-${city}-${prov}`,
-        source: 'geocoder' as const,
-        location: { lat, lng },
-      }
-    }
-
+    setMapsError(null)
     try {
-      const [nominatimResult, geocoderResult] = await Promise.allSettled([
-        fetchNominatim(),
-        fetchGeocoder(),
-      ])
-      const options: AddressSuggestion[] = []
-      if (geocoderResult.status === 'fulfilled' && geocoderResult.value) {
-        options.push(geocoderResult.value)
-      }
-      if (nominatimResult.status === 'fulfilled') {
-        nominatimResult.value.forEach((option) => {
-          if (!options.some((existing) => existing.description === option.description)) {
-            options.push(option)
-          }
-        })
-      }
+      const options = await fetchPlacePredictions(query.trim())
       setDestinationOptions(options)
-    } catch (error) {
-      if ((error as Error).name !== 'AbortError') {
-        setDestinationOptions([])
-      }
+    } catch {
+      setDestinationOptions([])
+      setMapsError('Unable to load Google Maps suggestions.')
     } finally {
       setDestinationLoading(false)
     }
+  }
+
+  const geocodeAddress = async (query: string) => {
+    const googleMaps = await ensureGoogleMaps()
+    const bounds = buildGoogleBounds(serviceBounds)
+    return new Promise<GoogleGeocoderResult | null>((resolve) => {
+      const geocoder = new googleMaps.maps.Geocoder()
+      geocoder.geocode(
+        {
+          address: query,
+          componentRestrictions: { country: 'CA' },
+          bounds: bounds ?? undefined,
+        },
+        (results, status) => {
+          if (status !== googleMaps.maps.GeocoderStatus.OK || !results?.length) {
+            resolve(null)
+            return
+          }
+          resolve(results[0] as GoogleGeocoderResult)
+        }
+      )
+    })
+  }
+
+  const geocodePlaceId = async (placeId: string) => {
+    const googleMaps = await ensureGoogleMaps()
+    return new Promise<GoogleGeocoderResult | null>((resolve) => {
+      const geocoder = new googleMaps.maps.Geocoder()
+      geocoder.geocode({ placeId }, (results, status) => {
+        if (status !== googleMaps.maps.GeocoderStatus.OK || !results?.length) {
+          resolve(null)
+          return
+        }
+        resolve(results[0] as GoogleGeocoderResult)
+      })
+    })
   }
 
   const applyAddressLocation = (address: string, location: { lat: number; lng: number }) => {
@@ -795,171 +625,42 @@ function App() {
     setAddressResult(null)
     setAddressClosestStop(null)
     setAddressError(null)
+    setMapsError(null)
     if (!value) {
       setAddressSelection(null)
       setOrigin(null)
       return
     }
-    if (typeof value === 'string') {
-      const query = value.trim()
+    setAddressLoading(true)
+    try {
+      const query = typeof value === 'string' ? value.trim() : value.description
       if (!query) {
         setAddressSelection(null)
-        setAddressLoading(false)
         return
       }
-      setAddressLoading(true)
-      try {
-        const isHouseNumberQuery = /^\d{1,6}\s+/.test(query)
-        if (isHouseNumberQuery) {
-          const geocoderUrl = new URL(geocoderBaseUrl)
-          geocoderUrl.searchParams.set('locate', query)
-          geocoderUrl.searchParams.set('json', '1')
-          const geocoderResponse = await fetch(geocoderUrl.toString(), {
-            headers: { Accept: 'application/json' },
-          })
-          if (geocoderResponse.ok) {
-            const result = (await geocoderResponse.json()) as GeocoderResult
-            const lat = Number(result.latt)
-            const lng = Number(result.longt)
-            const standard = result.standard
-            const stnumber = standard?.stnumber?.trim()
-            const staddress = standard?.staddress?.trim()
-            const city = standard?.city?.trim()
-            const prov = standard?.prov?.trim()
-            if (
-              Number.isFinite(lat) &&
-              Number.isFinite(lng) &&
-              stnumber &&
-              staddress &&
-              city &&
-              prov
-            ) {
-              if (
-                !isMooseJawGeocoderResult(result) ||
-                !isWithinBounds(lat, lng, serviceBounds)
-              ) {
-                setAddressError('Only Moose Jaw addresses are supported.')
-                return
-              }
-              const description = `${stnumber} ${staddress}, ${city}, ${prov}`
-              setAddressSelection({
-                description,
-                place_id: `geocoder:${stnumber}-${staddress}-${city}-${prov}`,
-                source: 'geocoder',
-                location: { lat, lng },
-              })
-              if (stops.length === 0) {
-                return
-              }
-              applyAddressLocation(description, { lat, lng })
-              return
-            }
-          }
-        }
-
-        const fetchWithPreference = async (preferAddressOnly: boolean) => {
-          const url = new URL(nominatimBaseUrl)
-          setNominatimSearchParams(
-            url,
-            query,
-            isHouseNumberQuery,
-            1,
-            preferAddressOnly,
-            serviceBounds
-          )
-          const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } })
-          if (!response.ok) {
-            throw new Error('Address lookup failed.')
-          }
-          return (await response.json()) as NominatimResult[]
-        }
-        let combinedResults: NominatimResult[] = await fetchWithPreference(true)
-        if (isHouseNumberQuery) {
-          const broaderResults = await fetchWithPreference(false)
-          const byId = new Map<string, NominatimResult>()
-          combinedResults.forEach((result) => byId.set(String(result.place_id), result))
-          broaderResults.forEach((result) => byId.set(String(result.place_id), result))
-          combinedResults = Array.from(byId.values())
-        }
-        const orderedResults = isHouseNumberQuery
-          ? [...combinedResults].sort((a, b) => scoreNominatimResult(b) - scoreNominatimResult(a))
-          : combinedResults
-        const filteredResults = orderedResults.filter((result) => {
-          const lat = Number(result.lat)
-          const lon = Number(result.lon)
-          if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false
-          return isMooseJawNominatimResult(result) && isWithinBounds(lat, lon, serviceBounds)
-        })
-        const top = filteredResults[0]
-        if (!top) {
-          setAddressError('Only Moose Jaw addresses are supported.')
-          return
-        }
-        const label = buildNominatimLabel(top)
-        setAddressSelection({
-          description: label,
-          place_id: String(top.place_id),
-          source: 'nominatim',
-        })
-        if (stops.length === 0) {
-          return
-        }
-        const location = { lat: Number(top.lat), lng: Number(top.lon) }
-        applyAddressLocation(label, location)
-      } finally {
-        setAddressLoading(false)
-      }
-      return
-    }
-    if (value.source === 'geocoder' && value.location) {
-      if (!isWithinBounds(value.location.lat, value.location.lng, serviceBounds)) {
+      const result =
+        typeof value === 'string'
+          ? await geocodeAddress(query)
+          : await geocodePlaceId(value.place_id)
+      if (!result || !isMooseJawGoogleResult(result)) {
         setAddressError('Only Moose Jaw addresses are supported.')
-        setAddressLoading(false)
         return
       }
-      setAddressSelection(value)
+      const location = getGoogleLocation(result)
+      if (!location || !isWithinBounds(location.lat, location.lng, serviceBounds)) {
+        setAddressError('Only Moose Jaw addresses are supported.')
+        return
+      }
+      const description = result.formatted_address ?? query
+      const placeId = result.place_id ?? (typeof value === 'string' ? query : value.place_id)
+      setAddressSelection({ description, place_id: placeId, source: 'google' })
+      setAddressInput(description)
       if (stops.length === 0) {
-        setAddressLoading(false)
         return
       }
-      applyAddressLocation(value.description, value.location)
-      setAddressLoading(false)
-      return
-    }
-    setAddressSelection(value)
-
-    if (stops.length === 0) {
-      setAddressLoading(false)
-      return
-    }
-
-    setAddressLoading(true)
-    const url = new URL(nominatimLookupUrl)
-    url.searchParams.set('format', 'json')
-    url.searchParams.set('addressdetails', '1')
-    url.searchParams.set('place_ids', value.place_id)
-
-    try {
-      const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } })
-      if (!response.ok) {
-        throw new Error('Address lookup failed.')
-      }
-      const results = (await response.json()) as NominatimResult[]
-      const top = results[0]
-      if (!top) {
-        setAddressError('Only Moose Jaw addresses are supported.')
-        return
-      }
-      if (!isMooseJawNominatimResult(top)) {
-        setAddressError('Only Moose Jaw addresses are supported.')
-        return
-      }
-      const location = { lat: Number(top.lat), lng: Number(top.lon) }
-      if (!isWithinBounds(location.lat, location.lng, serviceBounds)) {
-        setAddressError('Only Moose Jaw addresses are supported.')
-        return
-      }
-      applyAddressLocation(buildNominatimLabel(top), location)
+      applyAddressLocation(description, location)
+    } catch {
+      setMapsError('Unable to look up that address.')
     } finally {
       setAddressLoading(false)
     }
@@ -971,6 +672,7 @@ function App() {
   ) => {
     setDestinationResult(null)
     setDestinationError(null)
+    setMapsError(null)
     if (!value) {
       setDestinationSelection(null)
       setDestination(null)
@@ -978,151 +680,33 @@ function App() {
       setAddressClosestStop(null)
       return
     }
-    if (typeof value === 'string') {
-      const query = value.trim()
+    setDestinationLoading(true)
+    try {
+      const query = typeof value === 'string' ? value.trim() : value.description
       if (!query) {
         setDestinationSelection(null)
-        setDestinationLoading(false)
         return
       }
-      setDestinationLoading(true)
-      try {
-        const isHouseNumberQuery = /^\d{1,6}\s+/.test(query)
-        if (isHouseNumberQuery) {
-          const geocoderUrl = new URL(geocoderBaseUrl)
-          geocoderUrl.searchParams.set('locate', query)
-          geocoderUrl.searchParams.set('json', '1')
-          const geocoderResponse = await fetch(geocoderUrl.toString(), {
-            headers: { Accept: 'application/json' },
-          })
-          if (geocoderResponse.ok) {
-            const result = (await geocoderResponse.json()) as GeocoderResult
-            const lat = Number(result.latt)
-            const lng = Number(result.longt)
-            const standard = result.standard
-            const stnumber = standard?.stnumber?.trim()
-            const staddress = standard?.staddress?.trim()
-            const city = standard?.city?.trim()
-            const prov = standard?.prov?.trim()
-            if (
-              Number.isFinite(lat) &&
-              Number.isFinite(lng) &&
-              stnumber &&
-              staddress &&
-              city &&
-              prov
-            ) {
-              if (
-                !isMooseJawGeocoderResult(result) ||
-                !isWithinBounds(lat, lng, serviceBounds)
-              ) {
-                setDestinationError('Only Moose Jaw addresses are supported.')
-                return
-              }
-              const description = `${stnumber} ${staddress}, ${city}, ${prov}`
-              setDestinationSelection({
-                description,
-                place_id: `geocoder:${stnumber}-${staddress}-${city}-${prov}`,
-                source: 'geocoder',
-                location: { lat, lng },
-              })
-              applyDestinationLocation(description, { lat, lng })
-              return
-            }
-          }
-        }
-
-        const fetchWithPreference = async (preferAddressOnly: boolean) => {
-          const url = new URL(nominatimBaseUrl)
-          setNominatimSearchParams(
-            url,
-            query,
-            isHouseNumberQuery,
-            1,
-            preferAddressOnly,
-            serviceBounds
-          )
-          const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } })
-          if (!response.ok) {
-            throw new Error('Address lookup failed.')
-          }
-          return (await response.json()) as NominatimResult[]
-        }
-        let combinedResults: NominatimResult[] = await fetchWithPreference(true)
-        if (isHouseNumberQuery) {
-          const broaderResults = await fetchWithPreference(false)
-          const byId = new Map<string, NominatimResult>()
-          combinedResults.forEach((result) => byId.set(String(result.place_id), result))
-          broaderResults.forEach((result) => byId.set(String(result.place_id), result))
-          combinedResults = Array.from(byId.values())
-        }
-        const orderedResults = isHouseNumberQuery
-          ? [...combinedResults].sort((a, b) => scoreNominatimResult(b) - scoreNominatimResult(a))
-          : combinedResults
-        const filteredResults = orderedResults.filter((result) => {
-          const lat = Number(result.lat)
-          const lon = Number(result.lon)
-          if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false
-          return isMooseJawNominatimResult(result) && isWithinBounds(lat, lon, serviceBounds)
-        })
-        const top = filteredResults[0]
-        if (!top) {
-          setDestinationError('Only Moose Jaw addresses are supported.')
-          return
-        }
-        const label = buildNominatimLabel(top)
-        setDestinationSelection({
-          description: label,
-          place_id: String(top.place_id),
-          source: 'nominatim',
-        })
-        const location = { lat: Number(top.lat), lng: Number(top.lon) }
-        applyDestinationLocation(label, location)
-      } finally {
-        setDestinationLoading(false)
-      }
-      return
-    }
-    if (value.source === 'geocoder' && value.location) {
-      if (!isWithinBounds(value.location.lat, value.location.lng, serviceBounds)) {
-        setDestinationError('Only Moose Jaw addresses are supported.')
-        setDestinationLoading(false)
-        return
-      }
-      setDestinationSelection(value)
-      applyDestinationLocation(value.description, value.location)
-      setDestinationLoading(false)
-      return
-    }
-    setDestinationSelection(value)
-
-    setDestinationLoading(true)
-    const url = new URL(nominatimLookupUrl)
-    url.searchParams.set('format', 'json')
-    url.searchParams.set('addressdetails', '1')
-    url.searchParams.set('place_ids', value.place_id)
-
-    try {
-      const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } })
-      if (!response.ok) {
-        throw new Error('Address lookup failed.')
-      }
-      const results = (await response.json()) as NominatimResult[]
-      const top = results[0]
-      if (!top) {
+      const result =
+        typeof value === 'string'
+          ? await geocodeAddress(query)
+          : await geocodePlaceId(value.place_id)
+      if (!result || !isMooseJawGoogleResult(result)) {
         setDestinationError('Only Moose Jaw addresses are supported.')
         return
       }
-      if (!isMooseJawNominatimResult(top)) {
+      const location = getGoogleLocation(result)
+      if (!location || !isWithinBounds(location.lat, location.lng, serviceBounds)) {
         setDestinationError('Only Moose Jaw addresses are supported.')
         return
       }
-      const location = { lat: Number(top.lat), lng: Number(top.lon) }
-      if (!isWithinBounds(location.lat, location.lng, serviceBounds)) {
-        setDestinationError('Only Moose Jaw addresses are supported.')
-        return
-      }
-      applyDestinationLocation(buildNominatimLabel(top), location)
+      const description = result.formatted_address ?? query
+      const placeId = result.place_id ?? (typeof value === 'string' ? query : value.place_id)
+      setDestinationSelection({ description, place_id: placeId, source: 'google' })
+      setDestinationInput(description)
+      applyDestinationLocation(description, location)
+    } catch {
+      setMapsError('Unable to look up that address.')
     } finally {
       setDestinationLoading(false)
     }
@@ -1422,31 +1006,34 @@ function App() {
         }
         let address = 'Current location'
         try {
-          const reverseUrl = new URL(nominatimReverseUrl)
-          reverseUrl.searchParams.set('format', 'json')
-          reverseUrl.searchParams.set('lat', latitude.toString())
-          reverseUrl.searchParams.set('lon', longitude.toString())
-          reverseUrl.searchParams.set('zoom', '18')
-          reverseUrl.searchParams.set('addressdetails', '1')
-          const response = await fetch(reverseUrl.toString(), {
-            headers: { Accept: 'application/json' },
-          })
-          if (response.ok) {
-            const result = (await response.json()) as NominatimReverseResult
-            if (!isMooseJawLocality(getNominatimLocality(result.address))) {
-              if (!normalize(result.display_name).includes(mooseJawName)) {
-                setGeoError('Your location is outside Moose Jaw transit service area.')
-                setGeolocating(false)
-                setAddressLoading(false)
-                return
+          const googleMaps = await ensureGoogleMaps()
+          const geocoder = new googleMaps.maps.Geocoder()
+          const results = await new Promise<GoogleGeocoderResult[] | null>((resolve) => {
+            geocoder.geocode(
+              { location: { lat: latitude, lng: longitude } },
+              (geocodeResults, status) => {
+                if (status !== googleMaps.maps.GeocoderStatus.OK || !geocodeResults?.length) {
+                  resolve(null)
+                  return
+                }
+                resolve(geocodeResults as GoogleGeocoderResult[])
               }
+            )
+          })
+          if (results?.length) {
+            const top = results[0]
+            if (!isMooseJawGoogleResult(top)) {
+              setGeoError('Your location is outside Moose Jaw transit service area.')
+              setGeolocating(false)
+              setAddressLoading(false)
+              return
             }
-            if (result.display_name) {
-              address = result.display_name
+            if (top.formatted_address) {
+              address = top.formatted_address
               setAddressSelection({
-                description: result.display_name,
-                place_id: String(result.place_id),
-                source: 'nominatim',
+                description: top.formatted_address,
+                place_id: top.place_id ?? top.formatted_address,
+                source: 'google',
               })
             }
           }
@@ -1666,7 +1253,7 @@ function App() {
                     </Grid>
                     <Grid item xs={12} md={3}>
                       <Typography variant="body2" color="text.secondary">
-                        Address search uses OpenStreetMap. Closest in-route stops appear after both
+                        Address search uses Google Maps. Closest in-route stops appear after both
                         addresses are set.
                       </Typography>
                     </Grid>
@@ -1736,6 +1323,7 @@ function App() {
                   {geoError && <Alert severity="warning">{geoError}</Alert>}
                   {addressError && <Alert severity="warning">{addressError}</Alert>}
                   {destinationError && <Alert severity="warning">{destinationError}</Alert>}
+                  {mapsError && <Alert severity="warning">{mapsError}</Alert>}
 
                   <Divider />
 
