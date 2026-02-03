@@ -78,6 +78,8 @@ type CandidateTrip = {
   alightTime: string
   boardSequence: number
   alightSequence: number
+  walkDistanceKm: number | null
+  exactDestination: boolean
 }
 
 type TransferPlan = {
@@ -727,6 +729,7 @@ function App() {
       const boardTime = stopTimes[boardIndex]
       let alightTime: StopTime | null = null
       let alightStop: Stop | null = null
+      let exactDestination = false
       const destinationIndex = stopTimes.findIndex(
         (time, index) => index > boardIndex && time.stop_id === destination.stop_id
       )
@@ -735,6 +738,7 @@ function App() {
         if (timeToMinutes(candidate.arrival_time) > timeToMinutes(boardTime.departure_time)) {
           alightTime = candidate
           alightStop = stopById.get(candidate.stop_id) ?? null
+          exactDestination = true
         }
       }
       if (!alightTime || !alightStop) {
@@ -752,6 +756,14 @@ function App() {
       if (boardTime.stop_sequence >= alightTime.stop_sequence) return
       const boardStop = stopById.get(boardTime.stop_id)
       if (!boardStop || !alightStop) return
+      const walkDistanceKm =
+        destinationLocation && alightStop
+          ? haversineDistanceKm(
+              alightStop,
+              destinationLocation.lat,
+              destinationLocation.lng
+            )
+          : null
       candidates.push({
         trip,
         route: routeById.get(trip.route_id),
@@ -761,18 +773,26 @@ function App() {
         alightTime: alightTime.arrival_time,
         boardSequence: boardTime.stop_sequence,
         alightSequence: alightTime.stop_sequence,
+        walkDistanceKm,
+        exactDestination,
       })
     })
 
-    const sortedByTime = [...candidates].sort(
-      (a, b) => timeToMinutes(a.boardTime) - timeToMinutes(b.boardTime)
-    )
-    if (sortedByTime.length > 0) {
-      const upcoming = sortedByTime.filter(
+    const sortedByPreference = [...candidates].sort((a, b) => {
+      if (a.exactDestination !== b.exactDestination) {
+        return a.exactDestination ? -1 : 1
+      }
+      const aWalk = a.walkDistanceKm ?? Number.POSITIVE_INFINITY
+      const bWalk = b.walkDistanceKm ?? Number.POSITIVE_INFINITY
+      if (aWalk !== bWalk) return aWalk - bWalk
+      return timeToMinutes(a.boardTime) - timeToMinutes(b.boardTime)
+    })
+    if (sortedByPreference.length > 0) {
+      const upcoming = sortedByPreference.filter(
         (candidate) => timeToMinutes(candidate.boardTime) >= nowMinutes
       )
       if (upcoming.length === 0) {
-        const [nextTrip, ...alternatives] = sortedByTime
+        const [nextTrip, ...alternatives] = sortedByPreference
         return {
           kind: 'direct' as const,
           nextTrip,
@@ -802,6 +822,8 @@ function App() {
         alightTime: alightTime.arrival_time,
         boardSequence: boardTime.stop_sequence,
         alightSequence: alightTime.stop_sequence,
+        walkDistanceKm: null,
+        exactDestination: false,
       }
     }
 
